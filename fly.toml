@@ -1,0 +1,45 @@
+# Fly.io config for the public, bring-your-own-key CV-CUE MCP server.
+# The app stores NO CV-CUE credentials — every caller sends their own key.
+# Change `app` to a name you own (fly apps create <name>) before deploying.
+
+app = "cv-cue-mcp"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  MCP_TRANSPORT = "hosted"
+  PORT = "8080"
+  LOG_LEVEL = "INFO"
+  # Ceiling for mutating calls. When "true", a caller must ALSO send
+  # `X-CVCUE-Enable-Writes: true` to reboot/disconnect/delete/PUT/POST.
+  CVCUE_ENABLE_WRITES = "false"
+  # Only these CV-CUE hosts may be targeted via X-CVCUE-Base-URL (SSRF guard).
+  CVCUE_ALLOWED_HOST_SUFFIXES = ".wifi.arista.com"
+  CVCUE_REDACT_SECRETS = "true"
+  CVCUE_POOL_MAX = "256"
+  CVCUE_POOL_IDLE_TTL = "900"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
