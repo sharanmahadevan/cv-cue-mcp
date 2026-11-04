@@ -82,6 +82,9 @@ def build_routes(state: AppState) -> list[Route]:
     async def legal(request: Request) -> Response:
         return html(pages.legal(request.url.path.strip("/")))
 
+    async def faq(_: Request) -> Response:
+        return html(pages.faq())
+
     # ----------------------------------------------------------- google login
 
     async def google_start(request: Request) -> Response:
@@ -195,6 +198,8 @@ def build_routes(state: AppState) -> list[Route]:
                 return RedirectResponse("/dashboard", 303)
         conn = await db(store.add_connection, user.id, name[:60], key_id, key_value, base_url, cid,
                         cfg.allow_writes and f.get("allow_writes") == "1")
+        if cfg.allow_writes and f.get("write_guard") != "1":
+            await db(store.set_write_guard, user.id, conn.id, False)
         ok, msg = await _test(user.id, conn)
         flash(request, "ok" if ok else "err",
               f"Saved “{name}”. " + (msg if ok else f"Test failed: {msg}. Check the key, then test again."))
@@ -225,6 +230,10 @@ def build_routes(state: AppState) -> list[Route]:
             await db(store.set_writes, user.id, cid, allow)
             state.pool.forget_connection(cid)
             flash(request, "ok", f"Writes {'enabled' if allow else 'disabled'} for “{conn.name}”.")
+        elif action == "guard" and cfg.allow_writes:
+            on = f.get("on") == "1"
+            await db(store.set_write_guard, user.id, cid, on)
+            flash(request, "ok", f"Confirm-before-write {'on' if on else 'off'} for “{conn.name}”.")
         elif action == "delete":
             await db(store.delete_connection, user.id, cid)
             state.pool.forget_connection(cid)
@@ -238,6 +247,18 @@ def build_routes(state: AppState) -> list[Route]:
                 f = await _check_csrf(request)
                 await db(store.revoke_client_for_user, user.id, str(f.get("client_id", "")))
                 flash(request, "ok", "Disconnected. That app must be approved again to use your connections.")
+            except PermissionError as exc:
+                flash(request, "err", str(exc))
+        return RedirectResponse("/dashboard", 303)
+
+    async def revoke_all(request: Request) -> Response:
+        user = await current_user(request)
+        if user:
+            try:
+                await _check_csrf(request)
+                n = await db(store.revoke_user_tokens, user.id)
+                flash(request, "ok", f"Disconnected every app ({n} token{'s' if n != 1 else ''} revoked). "
+                                     "Each must be approved again.")
             except PermissionError as exc:
                 flash(request, "err", str(exc))
         return RedirectResponse("/dashboard", 303)
@@ -297,6 +318,7 @@ def build_routes(state: AppState) -> list[Route]:
         Route("/", home, methods=["GET"]),
         Route("/terms", legal, methods=["GET"]),
         Route("/privacy", legal, methods=["GET"]),
+        Route("/faq", faq, methods=["GET"]),
         Route("/auth/google", google_start, methods=["GET"]),
         Route("/auth/google/callback", google_callback, methods=["GET"]),
         Route("/auth/dev", dev_login, methods=["POST"]),
@@ -305,6 +327,7 @@ def build_routes(state: AppState) -> list[Route]:
         Route("/connections", add_connection, methods=["POST"]),
         Route("/connections/{cid}/{action}", conn_action, methods=["POST"]),
         Route("/grants/revoke", revoke_grant, methods=["POST"]),
+        Route("/grants/revoke-all", revoke_all, methods=["POST"]),
         Route("/account/delete", delete_account, methods=["POST"]),
         Route("/consent", consent_get, methods=["GET"]),
         Route("/consent", consent_post, methods=["POST"]),

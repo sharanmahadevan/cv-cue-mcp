@@ -7,11 +7,15 @@ same {ok, data, message} structure (same contract as the RUCKUS One MCP).
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import time
 from collections import Counter
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from functools import wraps
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from ..client import CvcueClient
@@ -81,6 +85,100 @@ def writes_disabled() -> dict[str, Any]:
         "in its environment (or .env). Hosted server: send the header 'X-CVCUE-Enable-Writes: true' "
         "(only honoured if the operator allows writes)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Write guard — confirm before write. When on, a write is not sent the first time:
+# the tool returns a preview plus a confirm token, and only an identical repeat of
+# the call carrying that token executes. The token is an HMAC over the caller,
+# the connection and a canonical fingerprint of the exact request, and expires
+# after GUARD_TTL seconds. It is a change-control safety net, not an
+# authorization boundary (that is the CV-CUE key's role).
+# ---------------------------------------------------------------------------
+
+GUARD_TTL = 600
+
+
+@dataclass
+class GuardContext:
+    secret: bytes
+    subject: str      # binds tokens to one caller + connection
+    target: str       # shown in the preview, e.g. "connection 'HQ' (KEY-…1234)"
+
+
+def _no_guard() -> GuardContext | None:
+    return None
+
+
+# Set by the local server or the hosted app; returns None when the guard is off.
+GUARD: Callable[[], GuardContext | None] = _no_guard
+
+
+def _fingerprint(subject: str, action: str, request: Any) -> str:
+    canon = json.dumps({"a": action, "r": request}, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(f"{subject}\0{canon}".encode()).hexdigest()
+
+
+def _sign(secret: bytes, exp: str, fp: str) -> str:
+    return hmac.new(secret, f"{exp}.{fp}".encode(), hashlib.sha256).hexdigest()[:40]
+
+
+def guard_write(action: str, request: dict[str, Any], confirm_token: str | None) -> dict[str, Any] | None:
+    """None = go ahead and write. Otherwise return this confirm_required envelope."""
+    g = GUARD()
+    if g is None:
+        return None
+    fp = _fingerprint(g.subject, action, request)
+    now = int(time.time())
+    stale = False
+    if confirm_token:
+        exp, _, mac = confirm_token.partition(".")
+        if exp.isdigit() and int(exp) >= now and hmac.compare_digest(mac, _sign(g.secret, exp, fp)):
+            return None
+        stale = True
+    exp = str(now + GUARD_TTL)
+    lead = ("That confirm_token is expired or doesn't match this exact request, so nothing was sent. "
+            if stale else "Nothing was sent yet: write guard is on for this connection. ")
+    return {
+        "ok": False,
+        "status": 0,
+        "message": "confirm_required — " + lead + "Show the user the preview (action, target, request), "
+                   "wait for an explicit yes in the conversation, then repeat the IDENTICAL call adding "
+                   "confirm_token. Any change to the call needs a new preview.",
+        "data": {"guard": {
+            "action": action,
+            "target": g.target,
+            "request": request,
+            "confirm_token": f"{exp}.{_sign(g.secret, exp, fp)}",
+            "expires_in_seconds": GUARD_TTL,
+        }},
+    }
+
+
+CONFIRM_TOKEN_HELP = ("Only when write guard asked for it: the confirm_token from the preview, "
+                      "sent after the user approved. Leave empty otherwise.")
+
+
+# ---------------------------------------------------------------------------
+# Endpoint notes — quirks Claude learns about an endpoint, shown again by
+# cvcue_api_schema. Stored per user (hosted) or in a local JSON file.
+# ---------------------------------------------------------------------------
+
+NOTE_MIN, NOTE_MAX, NOTES_PER_ENDPOINT, NOTES_TOTAL = 5, 500, 10, 300
+
+
+class NotesBackend(Protocol):
+    def list(self, method: str, path: str) -> list[dict[str, Any]]: ...
+    def count(self, method: str | None = None, path: str | None = None) -> int: ...
+    def add(self, method: str, path: str, note: str) -> dict[str, Any]: ...
+    def delete(self, note_id: str) -> bool: ...
+
+
+def _no_notes() -> NotesBackend | None:
+    return None
+
+
+NOTES: Callable[[], NotesBackend | None] = _no_notes
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ TREE = {"rootLocationId": {"type": "locallocationid", "id": 0},
             "type": "folderlocation", "name": "Root", "parentId": None}}}
 
 logins: list[str] = []
+writes_sent: list[str] = []
 
 
 def upstream(request: httpx.Request) -> httpx.Response:
@@ -37,6 +38,8 @@ def upstream(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"version": "2026.10.23"})
     if p == "/locations/tree":
         return httpx.Response(200, json=TREE)
+    if request.method != "GET" and p != "/session":
+        writes_sent.append(f"{request.method} {p}")
     if p == "/locations" and request.method == "POST":
         return httpx.Response(200, json={"type": "folderlocation", "id": {"type": "locallocationid", "id": 0},
                                          "children": [{"type": "folderlocation", "name": "New",
@@ -52,6 +55,7 @@ def upstream(request: httpx.Request) -> httpx.Response:
 @pytest.fixture(autouse=True)
 def mock_upstream(monkeypatch):
     logins.clear()
+    writes_sent.clear()
     orig = CvcueClient.__init__
 
     def patched(self, creds, transport=None):
@@ -102,11 +106,13 @@ class Hosted:
         r = await self.http.post("/auth/dev", data={"email": email, "next": "/dashboard"})
         assert r.status_code == 303
 
-    async def add_connection(self, name="HQ", key="K1", writes=False):
+    async def add_connection(self, name="HQ", key="K1", writes=False, guard=False):
         page = (await self.http.get("/dashboard")).text
         data = {"csrf": self.csrf(page), "name": name, "key_id": key, "key_value": "v", "base_url": BASE}
         if writes:
             data["allow_writes"] = "1"
+        if guard:
+            data["write_guard"] = "1"
         r = await self.http.post("/connections", data=data)
         assert r.status_code == 303
         return r
@@ -320,3 +326,155 @@ async def test_redaction_size_cap_and_writes_byok(monkeypatch):
         assert d["status"] == 413 and d["data"]["shape"]["length"] == 200
         d = await h.call("cvcue_delete_location", {"location_id": 9, "confirm": True}, auth="K:v", **hb)
         assert not d["ok"] and "disabled" in d["message"]
+
+
+# --- write guard, notes, hardening -------------------------------------------
+
+async def test_write_guard_previews_then_executes():
+    async with Hosted(settings(allow_writes=True)) as h:
+        await h.dev_login()
+        await h.add_connection("HQ", "K1", writes=True, guard=True)
+        page = (await h.http.get("/dashboard")).text
+        assert "confirm before write" in page
+        at = (await h.oauth())["access_token"]
+        args = {"name": "New", "parent_id": 0}
+        d = await h.call("cvcue_create_location", args, auth=at)
+        assert not d["ok"] and d["message"].startswith("confirm_required")
+        g = d["data"]["guard"]
+        assert g["target"].startswith("connection 'HQ'") and g["request"]["body"]["children"][0]["name"] == "New"
+        # a different request can't reuse the token
+        other = {**args, "name": "Other", "confirm_token": g["confirm_token"]}
+        d = await h.call("cvcue_create_location", other, auth=at)
+        assert not d["ok"] and "doesn't match" in d["message"]
+        # a tampered token fails
+        bad = g["confirm_token"][:-2] + ("00" if not g["confirm_token"].endswith("00") else "11")
+        d = await h.call("cvcue_create_location", {**args, "confirm_token": bad}, auth=at)
+        assert not d["ok"] and "confirm_required" in d["message"]
+        # the identical call with the token runs
+        assert writes_sent == []
+        d = await h.call("cvcue_create_location", {**args, "confirm_token": g["confirm_token"]}, auth=at)
+        assert d["ok"] and d["data"]["id"] == 9 and writes_sent == ["POST /locations"]
+        # api_execute writes are guarded too; GETs are not
+        d = await h.call("cvcue_api_execute", {"method": "DELETE", "path": "/locations", "body": {"id": 9}}, auth=at)
+        assert d["message"].startswith("confirm_required") and d["data"]["guard"]["request"]["method"] == "DELETE"
+        assert (await h.call("cvcue_api_execute", {"method": "GET", "path": "/system/version"}, auth=at))["ok"]
+        # a token minted for one connection doesn't work on another
+        await h.add_connection("Lab", "K2", writes=True, guard=True)
+        await h.call("cvcue_use_connection", {"name": "Lab"}, auth=at)
+        d = await h.call("cvcue_create_location", {**args, "confirm_token": g["confirm_token"]}, auth=at)
+        assert d["message"].startswith("confirm_required") and "'Lab'" in d["data"]["guard"]["target"]
+        # turning the guard off on the dashboard lets writes through directly
+        page = (await h.http.get("/dashboard")).text
+        for cid in re.findall(r"/connections/(c_[^/]+)/guard", page):
+            await h.http.post(f"/connections/{cid}/guard", data={"csrf": h.csrf(page), "on": "0"})
+        assert "writes run without asking" in (await h.http.get("/dashboard")).text
+        d = await h.call("cvcue_create_location", args, auth=at)
+        assert d["ok"]
+
+
+async def test_write_guard_expiry(monkeypatch):
+    async with Hosted(settings(allow_writes=True)) as h:
+        hb = {"X-CVCUE-Base-URL": BASE, "X-CVCUE-Enable-Writes": "true", "X-CVCUE-Write-Guard": "true"}
+        reboot = {"mac_addresses": ["aa-bb-cc-dd-ee-ff"], "confirm": True}
+        d = await h.call("cvcue_reboot_aps", reboot, auth="K:v", **hb)
+        g = d["data"]["guard"]
+        assert g["request"]["aps"] == ["AA:BB:CC:DD:EE:FF"] and g["target"] == "raw API key K"
+        real = _shared.time.time
+        monkeypatch.setattr(_shared.time, "time", lambda: real() + _shared.GUARD_TTL + 5)
+        d = await h.call("cvcue_reboot_aps", {"mac_addresses": ["aa-bb-cc-dd-ee-ff"], "confirm": True,
+                                              "confirm_token": g["confirm_token"]}, auth="K:v", **hb)
+        assert not d["ok"] and "expired" in d["message"]
+        # without the header, raw-key writes aren't guarded
+        hb.pop("X-CVCUE-Write-Guard")
+        d = await h.call("cvcue_reboot_aps", reboot, auth="K:v", **hb)
+        assert d["ok"]
+
+
+async def test_endpoint_notes_and_caveats():
+    async with Hosted(settings()) as h:
+        await h.dev_login("ada@example.com")
+        await h.add_connection("Ada", "KA")
+        ada = (await h.oauth())["access_token"]
+        sch = {"path": "/manageddevices/aps", "method": "GET"}
+        d = await h.call("cvcue_api_schema", sch, auth=ada)
+        assert any("0-based" in c for c in d["data"]["caveats"]) and d["data"]["your_notes"] == []
+        d = await h.call("cvcue_save_endpoint_note", {**sch, "note": "x"}, auth=ada)
+        assert not d["ok"] and "characters" in d["message"]
+        nope = {"method": "GET", "path": "/nope", "note": "hello there"}
+        d = await h.call("cvcue_save_endpoint_note", nope, auth=ada)
+        assert not d["ok"] and "not in the API spec" in d["message"]
+        d = await h.call("cvcue_save_endpoint_note", {**sch, "note": "Sort with  sortby=name only."}, auth=ada)
+        assert d["ok"]
+        note_id = d["data"]["id"]
+        d = await h.call("cvcue_save_endpoint_note", {**sch, "note": "sort with sortby=name ONLY."}, auth=ada)
+        assert d["data"]["duplicate"]
+        d = await h.call("cvcue_api_schema", sch, auth=ada)
+        assert d["data"]["your_notes"] == [{"id": note_id, "note": "Sort with sortby=name only."}]
+        for i in range(9):
+            await h.call("cvcue_save_endpoint_note", {**sch, "note": f"note number {i}"}, auth=ada)
+        d = await h.call("cvcue_save_endpoint_note", {**sch, "note": "one too many"}, auth=ada)
+        assert not d["ok"] and "already has 10" in d["message"]
+        # another user sees none of them and can't delete them
+        h.http.cookies.clear()
+        await h.dev_login("bob@example.com")
+        await h.add_connection("Bob", "KB")
+        bob = (await h.oauth())["access_token"]
+        assert (await h.call("cvcue_api_schema", sch, auth=bob))["data"]["your_notes"] == []
+        assert not (await h.call("cvcue_delete_endpoint_note", {"note_id": note_id}, auth=bob))["ok"]
+        assert (await h.call("cvcue_delete_endpoint_note", {"note_id": note_id}, auth=ada))["ok"]
+        assert len((await h.call("cvcue_api_schema", sch, auth=ada))["data"]["your_notes"]) == 9
+        # raw keys have no account to store notes in
+        d = await h.call("cvcue_save_endpoint_note", {**sch, "note": "hello there"}, auth="K:v",
+                         **{"X-CVCUE-Base-URL": BASE})
+        assert not d["ok"] and "sign in" in d["message"]
+
+
+async def test_disconnect_all_and_faq():
+    async with Hosted(settings()) as h:
+        assert "confirm-before-write" in (await h.http.get("/faq")).text.lower()
+        await h.dev_login()
+        await h.add_connection()
+        a, b = await h.oauth(), await h.oauth()
+        page = (await h.http.get("/dashboard")).text
+        assert "Disconnect all apps" in page
+        r = await h.http.post("/grants/revoke-all", data={"csrf": h.csrf(page)})
+        assert r.status_code == 303
+        for tok in (a, b):
+            auth = {"Authorization": "Bearer " + tok["access_token"]}
+            r = await h.http.post("/mcp", json={}, headers={**MCP_HEADERS, **auth})
+            assert r.status_code == 401
+        assert "Disconnected every app" in (await h.http.get("/dashboard")).text
+
+
+async def test_registration_rate_limit():
+    async with Hosted(settings()) as h:
+        reg = {"client_name": "x", "redirect_uris": ["https://claude.ai/cb"], "token_endpoint_auth_method": "none"}
+        codes = [(await h.http.post("/register", json=reg, headers={"Fly-Client-IP": "1.2.3.4"})).status_code
+                 for _ in range(6)]
+        assert codes == [201] * 5 + [429]
+        r = await h.http.post("/register", json=reg, headers={"Fly-Client-IP": "5.6.7.8"})
+        assert r.status_code == 201
+
+
+def test_cipher_per_record_keys_and_v1_upgrade():
+    key = Cipher.generate_key()
+    c = Cipher(key)
+    a, b = c.encrypt("same", "u:c"), c.encrypt("same", "u:c")
+    assert a[0] == 2 and a[1:17] != b[1:17] and c.decrypt(a, "u:c") == "same"
+    with pytest.raises(Exception):
+        c.decrypt(a, "u:other")
+    store = Store(":memory:", c)
+    u = store.upsert_user("g1", "a@example.com", None)
+    conn = store.add_connection(u.id, "HQ", "K", "secret-v")
+    # simulate a v1 record (encrypted directly with the master key)
+    import os as _os
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    nonce = _os.urandom(12)
+    v1 = nonce + AESGCM(base64.urlsafe_b64decode(key + "=")).encrypt(nonce, b"secret-v", f"{u.id}:{conn.id}".encode())
+    store._x("UPDATE connections SET key_value_enc = ? WHERE id = ?", (v1, conn.id))
+    assert store.key_value(conn) == "secret-v"
+    assert store.upgrade_encryption() == 1 and store.upgrade_encryption() == 0
+    blob = store._q("SELECT key_value_enc FROM connections")[0]["key_value_enc"]
+    assert blob[0] == 2 and store.key_value(conn) == "secret-v"
+    assert conn.write_guard is True

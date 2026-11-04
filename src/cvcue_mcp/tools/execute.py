@@ -22,7 +22,8 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from . import _shared
-from ._shared import err, ok, safe, writes_disabled
+from ._shared import CONFIRM_TOKEN_HELP, err, guard_write, ok, safe, writes_disabled
+from .caveats import caveats_for
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +164,10 @@ def register(mcp: FastMCP, get_client: Any, spec_path: str, enable_writes: Calla
         """
         Get parameters, request body and response schema for one endpoint
         (step 3 of API discovery). Component $refs are inlined up to ref_depth.
+
+        Also returns `caveats` (live-tested quirks the spec doesn't state) and
+        `your_notes` (quirks saved earlier with cvcue_save_endpoint_note). Read both
+        before calling the endpoint.
         """
         spec = load_spec(spec_path)
         if spec is None:
@@ -196,6 +201,8 @@ def register(mcp: FastMCP, get_client: Any, spec_path: str, enable_writes: Calla
                 "schema": resolve_refs(schema, spec, 0, depth) if schema else None,
             }
         body = op.get("requestBody")
+        backend = _shared.NOTES()
+        notes = [{"id": n["id"], "note": n["note"]} for n in backend.list(method.upper(), path)] if backend else []
         return ok({
             "method": method.upper(),
             "path": path,
@@ -206,6 +213,8 @@ def register(mcp: FastMCP, get_client: Any, spec_path: str, enable_writes: Calla
             "parameters": params,
             "requestBody": resolve_refs(body, spec, 0, depth) if body else None,
             "responses": responses,
+            "caveats": caveats_for(method, path, op),
+            "your_notes": notes,
         })
 
     @mcp.tool()
@@ -217,6 +226,7 @@ def register(mcp: FastMCP, get_client: Any, spec_path: str, enable_writes: Calla
         query_params: Annotated[dict | None, Field(description="Query parameters (lists become repeated params)")] = None,
         body: Annotated[dict | list | str | None, Field(description="JSON request body for POST/PUT/DELETE")] = None,
         version: Annotated[str | None, Field(description="Optional module API Version header (default: server latest)")] = None,
+        confirm_token: Annotated[str | None, Field(description=CONFIRM_TOKEN_HELP)] = None,
     ) -> dict:
         """
         Execute ANY CV-CUE API call (step 4 of API discovery).
@@ -240,7 +250,10 @@ def register(mcp: FastMCP, get_client: Any, spec_path: str, enable_writes: Calla
         Never send that placeholder back in a write body — omit the field or supply
         the real value.
 
-        Non-GET calls require writes to be enabled for this connection.
+        Non-GET calls require writes to be enabled for this connection. If write guard is
+        on, the first attempt returns a preview and a confirm_token instead of writing:
+        show it to the user and, after an explicit yes, repeat the identical call with
+        confirm_token.
         """
         if method.upper() != "GET" and not enable_writes():
             return writes_disabled()
@@ -254,6 +267,11 @@ def register(mcp: FastMCP, get_client: Any, spec_path: str, enable_writes: Calla
             resolved = resolved.replace(f"{{{key}}}", str(val))
         if "{" in resolved:
             return err(f"Unresolved path placeholders in {resolved} — supply path_params.")
+        if method.upper() != "GET":
+            preview = {"method": method.upper(), "path": resolved, "query": query_params or {}, "body": body,
+                       "version": version}
+            if g := guard_write("api_execute", preview, confirm_token):
+                return g
         result = await get_client().request(
             method.upper(), resolved, params=query_params, json=body, version=version
         )

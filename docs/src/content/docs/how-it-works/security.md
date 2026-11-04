@@ -6,8 +6,10 @@ description: Where your CV-CUE key lives, how it's encrypted, how tokens work, a
 ## Your CV-CUE API key
 
 - **Encrypted at rest.** The key value is encrypted with AES-256-GCM before it's written to the
-  database. Each value has a random nonce and is bound to its user and connection, so a value
-  copied into another row won't decrypt.
+  database. Each value gets its own encryption key, derived with HKDF-SHA256 from the master key
+  and a random 16-byte salt, plus a random nonce. Each value is also bound to its user and
+  connection, so a value copied into another row won't decrypt. Values stored before this
+  scheme were re-encrypted automatically at startup.
 - **Write-only.** After you save it, the key value is never shown again: not on the dashboard,
   not in any API response, not to Claude. The dashboard shows only a masked key ID.
 - **Decrypted only in memory**, at the moment the server opens a CV-CUE session for you. The
@@ -25,8 +27,11 @@ Exactly what your CV-CUE API key's role allows, and no more:
 
 - **Read-only by default.** Writes need to be switched on for the connection (and allowed by the
   server operator). See [Enabling writes](/cv-cue-mcp/guides/writes/).
+- **Confirm before write.** On by default: every write returns a preview and runs only when
+  Claude repeats the identical request with a confirmation token, after your OK. See
+  [Enabling writes](/cv-cue-mcp/guides/writes/#confirm-before-write).
 - **Confirm on destructive actions.** Reboot, disconnect and delete tools also require
-  `confirm=true`, which Claude only sends after asking you.
+  `confirm=true`.
 - **Secrets are masked.** Wi-Fi passphrases, RADIUS and CoA secrets and similar fields come back
   as `***REDACTED***`, and write requests containing that placeholder are refused.
 
@@ -39,7 +44,10 @@ Exactly what your CV-CUE API key's role allows, and no more:
   on each use).
 - **Tokens are stored as SHA-256 hashes**, never in plain text.
 - **Disconnect any time.** *Connected apps* on the dashboard lists every app you've approved;
-  **Disconnect** revokes its tokens immediately.
+  **Disconnect** revokes one app's tokens immediately, and **Disconnect all apps** revokes every
+  token without touching your saved connections.
+- **Registration is rate-limited.** OAuth client registration (`/register`) accepts 5 requests a
+  minute per IP address.
 - **Browser protections.** Session cookies are signed, `HttpOnly`, `SameSite=Lax` and `Secure`.
   Forms carry CSRF tokens, and pages can't be framed.
 
@@ -53,7 +61,9 @@ Exactly what your CV-CUE API key's role allows, and no more:
 ## What the server doesn't keep
 
 Your network data. Tool results pass through the server to your MCP client and aren't saved or
-logged. Request logs contain paths and status codes, not headers or bodies.
+logged. The only things Claude can write to the server are short
+[endpoint notes](/cv-cue-mcp/how-it-works/api-discovery/#caveats-and-notes) about API
+behaviour, kept per account. Request logs contain paths and status codes, not headers or bodies.
 
 ## Bring-your-own-key mode
 

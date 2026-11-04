@@ -8,7 +8,7 @@ Two ways to reach /mcp:
      default connection. Keys are AES-GCM encrypted at rest and never sent to the client.
   2. Bring your own key (no account)
      Authorization: Bearer <key_id>:<key_value>  (or X-CVCUE-Key-Id / X-CVCUE-Key-Value)
-     X-CVCUE-Base-URL, X-CVCUE-CID, X-CVCUE-Enable-Writes are optional.
+     X-CVCUE-Base-URL, X-CVCUE-CID, X-CVCUE-Enable-Writes, X-CVCUE-Write-Guard are optional.
 
 Operator environment
   CVCUE_PUBLIC_URL             public origin, e.g. https://cv-cue-mcp.fly.dev (required)
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import logging
 import os
 import time
@@ -50,7 +51,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from .client import CvcueClient
 from .config import BUNDLED_SPEC, CvcueCredentials, _truthy
 from .tools import _shared
-from .tools._shared import err, ok, safe
+from .tools._shared import GuardContext, err, ok, safe
 from .web.oauth import SCOPE, CvcueOAuthProvider, is_byok_token
 from .web.store import Cipher, Store
 
@@ -131,6 +132,7 @@ def check_base_url(url: str, suffixes: tuple[str, ...]) -> str:
 
 
 def parse_byok(token: str, headers: Headers, settings: HostedSettings) -> tuple[CvcueCredentials, bool]:
+    """Returns (credentials, writes allowed). Write guard is read separately (byok_guard)."""
     key_id, _, key_value = token.partition(":")
     key_id, key_value = key_id.strip(), key_value.strip()
     if not key_id or not key_value:
@@ -142,6 +144,10 @@ def parse_byok(token: str, headers: Headers, settings: HostedSettings) -> tuple[
                              cid=(headers.get("x-cvcue-cid") or "").strip(), verify_ssl=True)
     writes = settings.allow_writes and _truthy(headers.get("x-cvcue-enable-writes"), default=False)
     return creds, writes
+
+
+def byok_guard(headers: Headers) -> bool:
+    return _truthy(headers.get("x-cvcue-write-guard"), default=False)
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +230,9 @@ class CallerContext:
     user_id: str | None = None
     connection: str | None = None
     problem: str | None = None
+    connection_id: str | None = None
+    guard_subject: str | None = None   # set when write guard is on for this caller
+    guard_target: str = ""
 
 
 _current: ContextVar[CallerContext | None] = ContextVar("cvcue_caller", default=None)
@@ -279,7 +288,10 @@ class CredentialMiddleware:
             return None
         if is_byok_token(token):
             creds, writes = parse_byok(token, headers, st.settings)
-            return CallerContext(client=await st.pool.get(creds), writes=writes)
+            masked = creds.key_id if len(creds.key_id) <= 8 else f"{creds.key_id[:4]}…{creds.key_id[-4:]}"
+            return CallerContext(client=await st.pool.get(creds), writes=writes,
+                                 guard_subject=f"byok:{ClientPool.key_for(creds)}" if byok_guard(headers) else None,
+                                 guard_target=f"raw API key {masked}")
         at = await st.provider.load_access_token(token)
         if at is None or not at.subject:
             return None
@@ -291,7 +303,9 @@ class CredentialMiddleware:
                                  key_value=await asyncio.to_thread(st.store.key_value, conn), cid=conn.cid)
         return CallerContext(client=await st.pool.get(creds, tag=conn.id),
                              writes=st.settings.allow_writes and conn.allow_writes,
-                             user_id=at.subject, connection=conn.name)
+                             user_id=at.subject, connection=conn.name, connection_id=conn.id,
+                             guard_subject=f"{at.subject}:{conn.id}" if conn.write_guard else None,
+                             guard_target=f"connection '{conn.name}' ({conn.key_id_masked})")
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +318,8 @@ Each connection uses the caller's own CV-CUE API key. Signed-in users may have s
 CV-CUE connections: cvcue_list_connections shows them and cvcue_use_connection switches
 the default. Writes only work when enabled for the connection (or, with a raw key, when
 the caller sent 'X-CVCUE-Enable-Writes: true') and the operator allows writes.
-Secret values come back as ***REDACTED***.
+Secret values come back as ***REDACTED***. Write guard is on by default for signed-in
+connections (and with 'X-CVCUE-Write-Guard: true' for raw keys).
 """
 
 
@@ -320,6 +335,55 @@ def _client() -> CvcueClient:
 def _writes() -> bool:
     ctx = current_caller()
     return bool(ctx and ctx.writes)
+
+
+class StoreNotes:
+    """Endpoint notes for one signed-in user."""
+
+    def __init__(self, store: Store, user_id: str) -> None:
+        self.store, self.user_id = store, user_id
+
+    def list(self, method: str, path: str) -> list[dict]:
+        return self.store.list_notes(self.user_id, method, path)
+
+    def count(self, method: str | None = None, path: str | None = None) -> int:
+        return self.store.count_notes(self.user_id, method, path)
+
+    def add(self, method: str, path: str, note: str) -> dict:
+        return self.store.add_note(self.user_id, method, path, note)
+
+    def delete(self, note_id: str) -> bool:
+        return self.store.delete_note(self.user_id, note_id)
+
+
+class RegistrationRateLimit:
+    """Limit OAuth dynamic client registrations (POST /register) per client IP."""
+
+    def __init__(self, app: ASGIApp, per_minute: int = 5, path: str = "/register") -> None:
+        self.app, self.limit, self.path = app, per_minute, path
+        self._hits: dict[str, list[float]] = {}
+
+    @staticmethod
+    def client_ip(scope: Scope) -> str:
+        h = Headers(scope=scope)
+        return (h.get("fly-client-ip") or (h.get("x-forwarded-for") or "").split(",")[0].strip()
+                or (scope.get("client") or ("?",))[0])
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("method") == "POST" and scope.get("path") == self.path:
+            ip, now = self.client_ip(scope), time.monotonic()
+            hits = [t for t in self._hits.get(ip, []) if now - t < 60]
+            if len(hits) >= self.limit:
+                retry = int(60 - (now - hits[0])) + 1
+                await JSONResponse({"error": "too_many_requests",
+                                    "error_description": "Too many client registrations; try again shortly."},
+                                   status_code=429, headers={"Retry-After": str(retry)})(scope, receive, send)
+                return
+            hits.append(now)
+            self._hits[ip] = hits
+            if len(self._hits) > 10_000:       # drop idle IPs
+                self._hits = {k: v for k, v in self._hits.items() if v and now - v[-1] < 60}
+        await self.app(scope, receive, send)
 
 
 def _register_connection_tools(mcp: FastMCP, state: AppState) -> None:
@@ -338,7 +402,7 @@ def _register_connection_tools(mcp: FastMCP, state: AppState) -> None:
             "in_use": ctx.connection,
             "connections": [{"name": c.name, "default": c.is_default, "key_id": c.key_id_masked,
                              "server": c.base_url or "auto", "writes": c.allow_writes and state.settings.allow_writes,
-                             "last_test_ok": c.last_test_ok} for c in conns],
+                             "write_guard": c.write_guard, "last_test_ok": c.last_test_ok} for c in conns],
             "manage": f"{state.settings.public_url}/dashboard",
         })
 
@@ -389,6 +453,20 @@ def build_app(settings: HostedSettings | None = None) -> ASGIApp:
             revocation_options=RevocationOptions(enabled=True),
         ),
     )
+    guard_secret = hmac.new(settings.session_secret.encode(), b"cv-cue-mcp write guard", hashlib.sha256).digest()
+
+    def guard() -> GuardContext | None:
+        ctx = current_caller()
+        if ctx is None or not ctx.guard_subject:
+            return None
+        return GuardContext(guard_secret, ctx.guard_subject, ctx.guard_target)
+
+    def notes_backend() -> StoreNotes | None:
+        ctx = current_caller()
+        return StoreNotes(store, ctx.user_id) if ctx and ctx.user_id else None
+
+    _shared.GUARD = guard
+    _shared.NOTES = notes_backend
     _register_all(mcp, _client, _writes, os.environ.get("CVCUE_OPENAPI_SPEC") or str(BUNDLED_SPEC))
     _register_connection_tools(mcp, state)
 
@@ -406,6 +484,8 @@ def build_app(settings: HostedSettings | None = None) -> ASGIApp:
     async def lifespan(app) -> AsyncIterator[None]:  # noqa: ANN001
         async with inner_lifespan(app):
             await asyncio.to_thread(store.purge_expired)
+            if n := await asyncio.to_thread(store.upgrade_encryption):
+                log.info("Re-encrypted %d stored key(s) with per-record keys", n)
             log.info("Hosted app ready at %s — Google sign-in %s, writes %s", settings.public_url,
                      "on" if settings.google_enabled else "OFF", "allowed" if settings.allow_writes else "disabled")
             try:
@@ -415,6 +495,7 @@ def build_app(settings: HostedSettings | None = None) -> ASGIApp:
 
     inner.router.lifespan_context = lifespan
     app = CredentialMiddleware(inner, state, mcp.settings.streamable_http_path)
+    app = RegistrationRateLimit(app, per_minute=int(os.environ.get("CVCUE_REGISTER_PER_MINUTE", "5")))
     session = SessionMiddleware(app, secret_key=settings.session_secret, session_cookie="cvcue_session",
                                 max_age=14 * 24 * 3600, same_site="lax",
                                 https_only=settings.public_url.startswith("https://"))

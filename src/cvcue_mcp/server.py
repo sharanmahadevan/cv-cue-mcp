@@ -6,14 +6,16 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
 
+from . import prompts
 from .client import CvcueClient
 from .config import ServerConfig, _truthy
-from .tools import _shared, aps, clients, events, execute, locations, switches, troubleshooting, wlans
+from .tools import _shared, aps, clients, events, execute, locations, notes, switches, troubleshooting, wlans
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +44,8 @@ captures, client connectivity tests, users, checkpoints, ...):
   2. cvcue_api_search   → find endpoints by keyword
   3. cvcue_api_schema   → parameters + request/response schema
   4. cvcue_api_execute  → call the endpoint
+cvcue_api_schema also returns `caveats` (live-tested quirks) and `your_notes`. When you
+prove a new quirk against the live API, save it with cvcue_save_endpoint_note.
 List endpoints page with startindex (0-based offset) + pagesize. Time parameters
 (fromtime/totime etc.) are epoch MILLISECONDS — even where the spec text says
 microseconds, the server rejects µs values.
@@ -49,6 +53,9 @@ microseconds, the server rejects µs values.
 ## Safety
 Mutating calls need CVCUE_ENABLE_WRITES=true; destructive curated tools also need
 confirm=true. Confirm with the user before rebooting, disconnecting or deleting.
+With write guard on, a write returns status "confirm_required" with a preview and a
+confirm_token instead of running: show the preview, wait for the user's explicit yes,
+then repeat the identical call with confirm_token. Never confirm on the user's behalf.
 
 ## Response format
 All tools return {ok, data, message}. Check ok==true before using data.
@@ -65,6 +72,8 @@ def _register_all(mcp: FastMCP, get_client: Callable[[], CvcueClient], writes: C
     troubleshooting.register(mcp, get_client)
     switches.register(mcp, get_client)
     execute.register(mcp, get_client, spec_path=spec_path, enable_writes=writes)
+    notes.register(mcp, spec_path)
+    prompts.register(mcp)
 
 
 def create_server(cfg: ServerConfig) -> FastMCP:
@@ -93,7 +102,16 @@ def create_server(cfg: ServerConfig) -> FastMCP:
     mcp = FastMCP(name="cv-cue-mcp", instructions=INSTRUCTIONS, lifespan=lifespan)
 
     w = cfg.enable_writes
+    if _truthy(os.environ.get("CVCUE_WRITE_GUARD"), default=False):
+        guard = _shared.GuardContext(secrets.token_bytes(32), "local",
+                                     f"CV-CUE {cfg.credentials.base_url or '(auto)'} as {cfg.credentials.key_id}")
+        _shared.GUARD = lambda: guard
+    else:
+        _shared.GUARD = _shared._no_guard
+    file_notes = notes.FileNotes(os.environ.get("CVCUE_NOTES_PATH") or "~/.cvcue-mcp/notes.json")
+    _shared.NOTES = lambda: file_notes
     _register_all(mcp, get_client, lambda: w, cfg.openapi_spec_path)
 
-    log.info("Server ready — transport: %s, writes %s", cfg.transport, "ENABLED" if w else "disabled")
+    log.info("Server ready — transport: %s, writes %s, write guard %s", cfg.transport,
+             "ENABLED" if w else "disabled", "on" if _shared.GUARD() else "off")
     return mcp

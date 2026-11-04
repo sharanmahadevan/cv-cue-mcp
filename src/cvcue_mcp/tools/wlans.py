@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from ._shared import err, ok, safe, writes_disabled
+from ._shared import CONFIRM_TOKEN_HELP, err, guard_write, ok, safe, writes_disabled
 from .locations import loc_id
 
 # WirelessProfile.apSecurityMode values (from the CV-CUE spec)
@@ -89,6 +89,7 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
     async def cvcue_delete_ssid(
         template_id: Annotated[int, Field(description="SSID profile templateId to delete")],
         confirm: Annotated[bool, Field(description="Must be true to proceed")] = False,
+        confirm_token: Annotated[str | None, Field(description=CONFIRM_TOKEN_HELP)] = None,
     ) -> dict:
         """
         Delete an SSID profile. Fails if the profile is still referenced by a device
@@ -99,5 +100,8 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
             return writes_disabled()
         if not confirm:
             return err("Refusing to delete without confirm=true.")
-        result = await get_client().delete(f"/deviceconfiguration/ssidprofiles/{template_id}")
+        path = f"/deviceconfiguration/ssidprofiles/{template_id}"
+        if g := guard_write("delete_ssid", {"DELETE": path}, confirm_token):
+            return g
+        result = await get_client().delete(path)
         return ok(result, f"Deleted SSID profile {template_id}")

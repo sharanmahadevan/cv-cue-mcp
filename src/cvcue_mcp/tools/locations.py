@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from ._shared import err, ok, safe, writes_disabled
+from ._shared import CONFIRM_TOKEN_HELP, err, guard_write, ok, safe, writes_disabled
 
 
 def loc_id(value: Any) -> Any:
@@ -150,6 +150,7 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
         location_type: Annotated[str, Field(description="'folderlocation' (campus/building) or 'floorlocation'")] = "folderlocation",
         timezone_id: Annotated[str, Field(description="Java timezone id, e.g. 'America/Los_Angeles'")] = "UTC",
         venue_id: Annotated[str | None, Field(description="Optional venue id / label")] = None,
+        confirm_token: Annotated[str | None, Field(description=CONFIRM_TOKEN_HELP)] = None,
     ) -> dict:
         """Create a folder or floor location under a parent. Requires CVCUE_ENABLE_WRITES=true."""
         if not enable_writes():
@@ -170,6 +171,8 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
             "id": {"type": "locallocationid", "id": parent_id},
             "children": [child],
         }
+        if g := guard_write("create_location", {"POST": "/locations", "body": body}, confirm_token):
+            return g
         result = await get_client().post("/locations", json=body)
         # The API echoes the whole parent folder; pull out the location we just made.
         created = next(
@@ -194,6 +197,7 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
     async def cvcue_delete_location(
         location_id: Annotated[int, Field(description="Location id to delete — its child locations are deleted too")],
         confirm: Annotated[bool, Field(description="Must be true to proceed")] = False,
+        confirm_token: Annotated[str | None, Field(description=CONFIRM_TOKEN_HELP)] = None,
     ) -> dict:
         """
         Delete a location AND all of its child locations. Irreversible.
@@ -203,7 +207,8 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
             return writes_disabled()
         if not confirm:
             return err("Refusing to delete without confirm=true (child locations are deleted too).")
-        result = await get_client().delete(
-            "/locations", json={"type": "locallocationid", "id": location_id}
-        )
+        body = {"type": "locallocationid", "id": location_id}
+        if g := guard_write("delete_location", {"DELETE": "/locations", "body": body}, confirm_token):
+            return g
+        result = await get_client().delete("/locations", json=body)
         return ok(result, f"Deleted location {location_id}")

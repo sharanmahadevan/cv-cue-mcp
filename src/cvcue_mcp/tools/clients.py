@@ -7,9 +7,11 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from ._shared import (
+    CONFIRM_TOKEN_HELP,
     counts,
     err,
     fetch_all,
+    guard_write,
     norm_mac,
     ok,
     page_params,
@@ -157,6 +159,7 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
     async def cvcue_disconnect_client(
         mac_address: Annotated[str, Field(description="Client MAC address to disconnect")],
         confirm: Annotated[bool, Field(description="Must be true to proceed")] = False,
+        confirm_token: Annotated[str | None, Field(description=CONFIRM_TOKEN_HELP)] = None,
     ) -> dict:
         """
         Force-disconnect (deauthenticate) a wireless client. The client may reconnect.
@@ -167,5 +170,7 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
         if not confirm:
             return err("Refusing to disconnect without confirm=true.")
         mac = norm_mac(mac_address)
+        if g := guard_write("disconnect_client", {"POST": f"/clients/{mac}/disconnectrequest"}, confirm_token):
+            return g
         result = await get_client().post(f"/clients/{mac}/disconnectrequest")
         return ok(result, f"Disconnect requested for {mac}")

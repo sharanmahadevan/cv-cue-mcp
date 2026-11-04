@@ -7,6 +7,11 @@ Unified Edge), Arista's cloud-managed Wi-Fi platform.
   troubleshooting, switches
 - **4 discovery tools** that open up the **whole CV-CUE REST API** (613 operations across 24
   modules) without registering hundreds of tools
+- **6 workflow prompts** in Claude's + menu: RF health review, client deep-dive, can't-connect
+  diagnosis, site as-built document, rogue AP review, configuration audit
+- **Confirm before write**: writes are previewed and run only after the user's OK
+- **API caveats and notes**: live-tested quirks shown with each endpoint's schema, plus notes
+  Claude saves as it learns
 - Every tool returns the same `{ok, data, message}` envelope
 - Secrets (PSK passphrases, RADIUS secrets, …) are **redacted** before they reach the model
 

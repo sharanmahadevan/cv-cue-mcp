@@ -123,3 +123,35 @@ async def test_execute_requires_path_params(mock_client):
     mcp = create_server(ServerConfig(credentials=CvcueCredentials(base_url=BASE, key_id="K", key_value="V")))
     d = await call(mcp, "cvcue_api_execute", {"method": "GET", "path": "/clients/{macaddress}/snapshots"})
     assert not d["ok"] and "path_params" in d["message"]
+
+
+async def test_prompts_listed_and_rendered():
+    mcp = create_server(ServerConfig(credentials=CvcueCredentials(base_url=BASE, key_id="K", key_value="V")))
+    async with create_connected_server_and_client_session(mcp._mcp_server) as s:
+        prompts = (await s.list_prompts()).prompts
+        assert len(prompts) == 6 and all(p.title for p in prompts)
+        r = await s.get_prompt("cvcue_client_deep_dive", {"mac": "aa:bb:cc:dd:ee:ff", "hours": "6"})
+        text = r.messages[0].content.text
+        assert "aa:bb:cc:dd:ee:ff" in text and "6 hours" in text and "read-only" in text
+        r = await s.get_prompt("cvcue_rf_health_review", {"location": "HQ"})
+        assert '"HQ"' in r.messages[0].content.text
+
+
+async def test_local_write_guard_and_file_notes(mock_client, monkeypatch, tmp_path):
+    monkeypatch.setenv("CVCUE_WRITE_GUARD", "true")
+    monkeypatch.setenv("CVCUE_NOTES_PATH", str(tmp_path / "notes.json"))
+    mcp = create_server(ServerConfig(credentials=CvcueCredentials(base_url=BASE, key_id="K", key_value="V"),
+                                     enable_writes=True))
+    try:
+        args = {"mac_addresses": ["00:11:74:00:00:01"], "confirm": True}
+        d = await call(mcp, "cvcue_reboot_aps", args)
+        assert d["message"].startswith("confirm_required")
+        d = await call(mcp, "cvcue_reboot_aps", {**args, "confirm_token": d["data"]["guard"]["confirm_token"]})
+        assert d["ok"] and d["data"]["rebooted"] == ["00:11:74:00:00:01"]
+        d = await call(mcp, "cvcue_save_endpoint_note",
+                       {"method": "get", "path": "/manageddevices/aps", "note": "active=true filters to online APs"})
+        assert d["ok"] and (tmp_path / "notes.json").exists()
+        d = await call(mcp, "cvcue_api_schema", {"path": "/manageddevices/aps"})
+        assert d["data"]["your_notes"][0]["note"].startswith("active=true")
+    finally:
+        _shared.GUARD = _shared._no_guard

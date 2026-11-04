@@ -3,8 +3,10 @@ Persistent storage for the hosted sign-in app (SQLite).
 
 What is stored
   users          Google account id + email
-  connections    a user's CV-CUE API keys. key_value is AES-256-GCM encrypted with
-                 CVCUE_MASTER_KEY and never returned to the browser or to Claude.
+  connections    a user's CV-CUE API keys. key_value is AES-256-GCM encrypted under a
+                 per-record key derived (HKDF-SHA256, random salt) from CVCUE_MASTER_KEY,
+                 and is never returned to the browser or to Claude.
+  endpoint_notes API quirks Claude saved for the user (cvcue_save_endpoint_note)
   oauth_clients  MCP clients registered through dynamic client registration
   oauth_codes / oauth_tokens
                  authorization codes and access/refresh tokens, stored only as
@@ -26,7 +28,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -80,7 +85,21 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     created_at  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS oauth_tokens_user ON oauth_tokens(user_id);
+CREATE TABLE IF NOT EXISTS endpoint_notes (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    method      TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    note        TEXT NOT NULL,
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS endpoint_notes_user ON endpoint_notes(user_id, method, path);
 """
+
+# Columns added after the first release: (table, column, definition)
+MIGRATIONS = [
+    ("connections", "write_guard", "INTEGER NOT NULL DEFAULT 1"),
+]
 
 
 def token_hash(token: str) -> str:
@@ -108,6 +127,7 @@ class Connection:
     base_url: str
     cid: str
     allow_writes: bool
+    write_guard: bool
     is_default: bool
     created_at: float
     last_tested_at: float | None
@@ -121,24 +141,46 @@ class Connection:
 
 
 class Cipher:
-    """AES-256-GCM with a random 96-bit nonce per value."""
+    """
+    AES-256-GCM. Each value gets its own key, HKDF-SHA256(master key, random 16-byte salt),
+    and a random 96-bit nonce. Envelope v2: 0x02 | salt(16) | nonce(12) | ciphertext+tag.
+    v1 values (nonce | ciphertext, encrypted directly with the master key) still decrypt,
+    and Store.upgrade_encryption() rewrites them as v2.
+    """
+
+    V2 = 2
+    _INFO = b"cv-cue-mcp connection key v2"
 
     def __init__(self, master_key_b64: str) -> None:
         key = base64.urlsafe_b64decode(master_key_b64 + "=" * (-len(master_key_b64) % 4))
         if len(key) != 32:
             raise ValueError("CVCUE_MASTER_KEY must be 32 bytes, base64url-encoded")
-        self._aes = AESGCM(key)
+        self._master = key
+        self._aes_v1 = AESGCM(key)
 
     @staticmethod
     def generate_key() -> str:
         return base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
 
+    def _derive(self, salt: bytes) -> AESGCM:
+        return AESGCM(HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=self._INFO).derive(self._master))
+
     def encrypt(self, plaintext: str, aad: str) -> bytes:
-        nonce = os.urandom(12)
-        return nonce + self._aes.encrypt(nonce, plaintext.encode(), aad.encode())
+        salt, nonce = os.urandom(16), os.urandom(12)
+        return bytes([self.V2]) + salt + nonce + self._derive(salt).encrypt(nonce, plaintext.encode(), aad.encode())
+
+    def decrypt_versioned(self, blob: bytes, aad: str) -> tuple[str, int]:
+        blob = bytes(blob)
+        if blob[:1] == bytes([self.V2]) and len(blob) > 1 + 16 + 12 + 16:
+            salt, nonce, ct = blob[1:17], blob[17:29], blob[29:]
+            try:
+                return self._derive(salt).decrypt(nonce, ct, aad.encode()).decode(), self.V2
+            except InvalidTag:
+                pass      # a v1 nonce can start with 0x02 too; fall through
+        return self._aes_v1.decrypt(blob[:12], blob[12:], aad.encode()).decode(), 1
 
     def decrypt(self, blob: bytes, aad: str) -> str:
-        return self._aes.decrypt(blob[:12], blob[12:], aad.encode()).decode()
+        return self.decrypt_versioned(blob, aad)[0]
 
 
 class Store:
@@ -151,8 +193,23 @@ class Store:
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.execute("PRAGMA journal_mode = WAL")
         self._db.executescript(SCHEMA)
+        for table, column, definition in MIGRATIONS:
+            cols = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         self._lock = threading.Lock()
         self.cipher = cipher
+
+    def upgrade_encryption(self) -> int:
+        """Re-encrypt any v1 key values with per-record derived keys. Returns how many changed."""
+        changed = 0
+        for r in self._q("SELECT id, user_id, key_value_enc FROM connections"):
+            aad = f"{r['user_id']}:{r['id']}"
+            plain, version = self.cipher.decrypt_versioned(r["key_value_enc"], aad)
+            if version != Cipher.V2:
+                self._x("UPDATE connections SET key_value_enc = ? WHERE id = ?", (self.cipher.encrypt(plain, aad), r["id"]))
+                changed += 1
+        return changed
 
     def _q(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
         with self._lock:
@@ -187,7 +244,8 @@ class Store:
     def _conn(r: sqlite3.Row) -> Connection:
         return Connection(
             id=r["id"], user_id=r["user_id"], name=r["name"], key_id=r["key_id"], base_url=r["base_url"],
-            cid=r["cid"], allow_writes=bool(r["allow_writes"]), is_default=bool(r["is_default"]),
+            cid=r["cid"], allow_writes=bool(r["allow_writes"]), write_guard=bool(r["write_guard"]),
+            is_default=bool(r["is_default"]),
             created_at=r["created_at"], last_tested_at=r["last_tested_at"],
             last_test_ok=None if r["last_test_ok"] is None else bool(r["last_test_ok"]),
             last_test_msg=r["last_test_msg"],
@@ -240,6 +298,9 @@ class Store:
     def set_writes(self, user_id: str, conn_id: str, allow: bool) -> None:
         self._x("UPDATE connections SET allow_writes = ? WHERE user_id = ? AND id = ?", (int(allow), user_id, conn_id))
 
+    def set_write_guard(self, user_id: str, conn_id: str, on: bool) -> None:
+        self._x("UPDATE connections SET write_guard = ? WHERE user_id = ? AND id = ?", (int(on), user_id, conn_id))
+
     def record_test(self, user_id: str, conn_id: str, ok: bool, msg: str, base_url: str | None = None) -> None:
         self._x(
             "UPDATE connections SET last_tested_at = ?, last_test_ok = ?, last_test_msg = ? WHERE user_id = ? AND id = ?",
@@ -251,6 +312,28 @@ class Store:
         self._x("DELETE FROM connections WHERE user_id = ? AND id = ?", (user_id, conn_id))
         if was_default and (rest := self.list_connections(user_id)):
             self.set_default(user_id, rest[0].id)
+
+    # --------------------------------------------------------- endpoint notes
+
+    def list_notes(self, user_id: str, method: str, path: str) -> list[dict]:
+        rows = self._q("SELECT * FROM endpoint_notes WHERE user_id = ? AND method = ? AND path = ? ORDER BY created_at",
+                       (user_id, method, path))
+        return [dict(r) for r in rows]
+
+    def count_notes(self, user_id: str, method: str | None = None, path: str | None = None) -> int:
+        if method is None:
+            return self._q("SELECT COUNT(*) AS n FROM endpoint_notes WHERE user_id = ?", (user_id,))[0]["n"]
+        return self._q("SELECT COUNT(*) AS n FROM endpoint_notes WHERE user_id = ? AND method = ? AND path = ?",
+                       (user_id, method, path))[0]["n"]
+
+    def add_note(self, user_id: str, method: str, path: str, note: str) -> dict:
+        rec = {"id": new_id("n_"), "user_id": user_id, "method": method, "path": path, "note": note,
+               "created_at": time.time()}
+        self._x("INSERT INTO endpoint_notes VALUES (:id, :user_id, :method, :path, :note, :created_at)", rec)
+        return rec
+
+    def delete_note(self, user_id: str, note_id: str) -> bool:
+        return self._x("DELETE FROM endpoint_notes WHERE user_id = ? AND id = ?", (user_id, note_id)) > 0
 
     # ------------------------------------------------------------------ OAuth
 

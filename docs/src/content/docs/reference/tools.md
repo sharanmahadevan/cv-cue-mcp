@@ -69,6 +69,7 @@ Create a folder or floor location under a parent. Requires CVCUE_ENABLE_WRITES=t
 | `location_type` | string | `'folderlocation'` | 'folderlocation' (campus/building) or 'floorlocation' |
 | `timezone_id` | string | `'UTC'` | Java timezone id, e.g. 'America/Los_Angeles' |
 | `venue_id` | string | `None` | Optional venue id / label |
+| `confirm_token` | string | `None` | Only when write guard asked for it: the confirm_token from the preview, sent after the user approved. Leave empty otherwise. |
 
 ### `cvcue_delete_location` ✎ 🔒
 
@@ -78,6 +79,7 @@ Delete a location AND all of its child locations. Irreversible. Requires CVCUE_E
 |---|---|---|---|
 | `location_id` | int | **required** | Location id to delete — its child locations are deleted too |
 | `confirm` | bool | `False` | Must be true to proceed |
+| `confirm_token` | string | `None` | Only when write guard asked for it: the confirm_token from the preview, sent after the user approved. Leave empty otherwise. |
 
 ## Access points
 
@@ -132,6 +134,7 @@ Reboot one or more managed APs (clients will be disconnected). Requires CVCUE_EN
 |---|---|---|---|
 | `mac_addresses` | string[] | **required** | MAC addresses of the APs to reboot |
 | `confirm` | bool | `False` | Must be true to proceed |
+| `confirm_token` | string | `None` | Only when write guard asked for it: the confirm_token from the preview, sent after the user approved. Leave empty otherwise. |
 
 ## Clients
 
@@ -182,6 +185,7 @@ Force-disconnect (deauthenticate) a wireless client. The client may reconnect. R
 |---|---|---|---|
 | `mac_address` | string | **required** | Client MAC address to disconnect |
 | `confirm` | bool | `False` | Must be true to proceed |
+| `confirm_token` | string | `None` | Only when write guard asked for it: the confirm_token from the preview, sent after the user approved. Leave empty otherwise. |
 
 ## SSIDs
 
@@ -220,6 +224,7 @@ Delete an SSID profile. Fails if the profile is still referenced by a device tem
 |---|---|---|---|
 | `template_id` | int | **required** | SSID profile templateId to delete |
 | `confirm` | bool | `False` | Must be true to proceed |
+| `confirm_token` | string | `None` | Only when write guard asked for it: the confirm_token from the preview, sent after the user approved. Leave empty otherwise. |
 
 ## Events and WIPS
 
@@ -354,7 +359,7 @@ Search CV-CUE API endpoints (step 2 of API discovery). Matches every word of `ke
 
 ### `cvcue_api_schema`
 
-Get parameters, request body and response schema for one endpoint (step 3 of API discovery). Component $refs are inlined up to ref_depth.
+Get parameters, request body and response schema for one endpoint (step 3 of API discovery). Component $refs are inlined up to ref_depth. Also returns `caveats` (live-tested quirks the spec doesn't state) and `your_notes` (quirks saved earlier with cvcue_save_endpoint_note). Read both before calling the endpoint.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -364,7 +369,7 @@ Get parameters, request body and response schema for one endpoint (step 3 of API
 
 ### `cvcue_api_execute`
 
-Execute ANY CV-CUE API call (step 4 of API discovery). Paths are relative to the API base URL (…/wifi/api). Most list endpoints page with startindex (0-based offset) + pagesize, and accept locationid to scope results to a location subtree (see cvcue_list_locations). Examples: GET /system/version GET /manageddevices/aps query_params={"pagesize": 20, "active": true} GET /clients/{macaddress}/associationhistory path_params={"macaddress": "AA:BB:CC:DD:EE:FF"} GET /troubleshooting/clientevents query_params={"fromtime": <epoch ms>, "pagesize": 50} Large responses: many GETs accept fields=[...] for a selective fetch (a field that doesn't support it fails with SELECTIVE_FETCH_OR_UPDATE_NOT_SUPPORTED_FOR_FIELD — drop that field and retry). /deviceconfiguration/devicetemplates is huge unless you pass modelspecific=false. Oversized results are refused with a shape preview. Secret values (passphrases, RADIUS secrets...) come back as ***REDACTED***. Never send that placeholder back in a write body — omit the field or supply the real value. Non-GET calls require writes to be enabled for this connection.
+Execute ANY CV-CUE API call (step 4 of API discovery). Paths are relative to the API base URL (…/wifi/api). Most list endpoints page with startindex (0-based offset) + pagesize, and accept locationid to scope results to a location subtree (see cvcue_list_locations). Examples: GET /system/version GET /manageddevices/aps query_params={"pagesize": 20, "active": true} GET /clients/{macaddress}/associationhistory path_params={"macaddress": "AA:BB:CC:DD:EE:FF"} GET /troubleshooting/clientevents query_params={"fromtime": <epoch ms>, "pagesize": 50} Large responses: many GETs accept fields=[...] for a selective fetch (a field that doesn't support it fails with SELECTIVE_FETCH_OR_UPDATE_NOT_SUPPORTED_FOR_FIELD — drop that field and retry). /deviceconfiguration/devicetemplates is huge unless you pass modelspecific=false. Oversized results are refused with a shape preview. Secret values (passphrases, RADIUS secrets...) come back as ***REDACTED***. Never send that placeholder back in a write body — omit the field or supply the real value. Non-GET calls require writes to be enabled for this connection. If write guard is on, the first attempt returns a preview and a confirm_token instead of writing: show it to the user and, after an explicit yes, repeat the identical call with confirm_token.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -374,3 +379,24 @@ Execute ANY CV-CUE API call (step 4 of API discovery). Paths are relative to the
 | `query_params` | object | `None` | Query parameters (lists become repeated params) |
 | `body` | object \| any[] \| string | `None` | JSON request body for POST/PUT/DELETE |
 | `version` | string | `None` | Optional module API Version header (default: server latest) |
+| `confirm_token` | string | `None` | Only when write guard asked for it: the confirm_token from the preview, sent after the user approved. Leave empty otherwise. |
+
+## Endpoint notes
+
+### `cvcue_save_endpoint_note`
+
+Record a quirk you proved while calling a CV-CUE endpoint (a required parameter the spec doesn't mark, a misleading field, an error and its fix) so cvcue_api_schema shows it next time. Save only facts you verified against the live API, never guesses, secrets or customer data. Limits: 10 notes per endpoint, 300 in total.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `method` | string | **required** | HTTP method of the endpoint |
+| `path` | string | **required** | Path template exactly as in the spec, e.g. '/manageddevices/aps' |
+| `note` | string | **required** | The quirk, 5-500 characters. No secrets or personal data. |
+
+### `cvcue_delete_endpoint_note`
+
+Delete one of your endpoint notes (for example, one that turned out to be wrong).
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `note_id` | string | **required** | Note id, as shown by cvcue_api_schema |

@@ -15,6 +15,7 @@ Only needed when you call `/mcp` with a raw API key instead of signing in. See
 | `X-CVCUE-Base-URL` | API base URL; must be `https://` on an allowed host. Found through Launchpad when omitted |
 | `X-CVCUE-CID` | Customer ID for multi-customer keys |
 | `X-CVCUE-Enable-Writes` | `true` to opt in to writes, if the server allows them |
+| `X-CVCUE-Write-Guard` | `true` to preview every write and require a confirmation token |
 
 ## Hosted server (operators)
 
@@ -31,6 +32,7 @@ Set these on your deployment. Secrets go in `fly secrets set`; the rest in `fly.
 | `CVCUE_ALLOWED_HOST_SUFFIXES` | `.wifi.arista.com` | Hosts a connection or `X-CVCUE-Base-URL` may point at |
 | `CVCUE_REDACT_SECRETS` | `true` | Mask passphrases and secrets in tool output |
 | `CVCUE_MAX_RESPONSE_CHARS` | `100000` | Largest `cvcue_api_execute` response returned |
+| `CVCUE_REGISTER_PER_MINUTE` | `5` | OAuth client registrations allowed per IP per minute |
 | `CVCUE_POOL_MAX` | `256` | Cached CV-CUE sessions |
 | `CVCUE_POOL_IDLE_TTL` | `900` | Seconds before an idle session is logged out |
 | `CVCUE_DEV_LOGIN` | `false` | Password-less dev sign-in. Refused unless `CVCUE_PUBLIC_URL` is localhost |
@@ -47,6 +49,8 @@ For running on your own machine with your own key. See [Run it locally](/cv-cue-
 | `CVCUE_USERNAME`, `CVCUE_PASSWORD` | On-premises CV-CUE local user, instead of a key |
 | `CVCUE_CID` | Customer ID for multi-customer keys |
 | `CVCUE_ENABLE_WRITES` | `true` to allow writes |
+| `CVCUE_WRITE_GUARD` | `true` to preview every write and require a confirmation token |
+| `CVCUE_NOTES_PATH` | Where endpoint notes are kept (default `~/.cvcue-mcp/notes.json`) |
 | `CVCUE_VERIFY_SSL` | `false` for on-prem servers with self-signed certificates |
 | `CVCUE_ENV_FILE` | `.env` file to load |
 | `CVCUE_CREDENTIALS_FILE` | INI file with a `[cvcue]` section (default `~/.cvcue/credentials`) |

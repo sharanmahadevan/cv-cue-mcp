@@ -1,6 +1,6 @@
 ---
 title: Curated tools and API discovery
-description: Why CV-CUE MCP exposes 36 tools instead of 613, and how Claude finds and calls any CV-CUE endpoint.
+description: Why CV-CUE MCP exposes 38 tools instead of 613, and how Claude finds and calls any CV-CUE endpoint.
 ---
 
 The CV-CUE REST API has **613 operations across 24 modules**. Exposing one MCP tool per
@@ -20,8 +20,9 @@ troubleshooting. They do more than pass through one API call:
   association history, connection logs, failure events and CV-CUE's inferences in one call.
 - **Cleaned-up output.** Location IDs are flattened from `{"type":"locallocationid","id":5}` to
   `5`, timestamps become ISO-8601, and empty fields are dropped.
-- **Safety.** Write tools check that writes are enabled, and destructive ones also require
-  `confirm=true`.
+- **Safety.** Write tools check that writes are enabled, go through
+  [confirm before write](/cv-cue-mcp/guides/writes/#confirm-before-write) when it's on, and
+  destructive ones also require `confirm=true`.
 
 ## Four discovery tools for everything else
 
@@ -38,9 +39,28 @@ the API the way you would with the docs open:
 Steps 1–3 read a copy of Arista's published OpenAPI spec bundled with the server, so they're
 instant and don't touch your CV-CUE account. Only step 4 calls the API.
 
+### Caveats and notes
+
+The spec doesn't always match how the live API behaves. `cvcue_api_schema` therefore returns two
+extra lists with every endpoint:
+
+- **`caveats`**: quirks verified against a live CV-CUE server and shipped with CV-CUE MCP. For
+  example, time parameters are epoch milliseconds even where the spec says microseconds; device
+  templates need `modelspecific=false` to stay a manageable size; and `startindex` is a record
+  offset, not a page number.
+- **`your_notes`**: quirks Claude found and saved for your account with
+  `cvcue_save_endpoint_note`. They're private to you, come back on every later lookup of that
+  endpoint, and can be removed with `cvcue_delete_endpoint_note`.
+
+Claude is told to save only facts it proved against the live API, never guesses, secrets or
+customer data. Notes are limited to 500 characters, 10 per endpoint and 300 per account. Notes
+need an account; with a raw API key there's nowhere to keep them. On a local server they're kept
+in `~/.cvcue-mcp/notes.json`.
+
 ### Guard rails on `cvcue_api_execute`
 
-- Anything other than GET is refused unless writes are enabled for the connection.
+- Anything other than GET is refused unless writes are enabled for the connection, and is
+  previewed for your OK first when confirm before write is on.
 - Write bodies that contain the `***REDACTED***` placeholder are refused, so a read-modify-write
   can't overwrite a real passphrase with the mask.
 - Responses over 100,000 characters are refused with a preview of their shape and tips to

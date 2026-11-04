@@ -106,7 +106,7 @@ def brand() -> str:
 
 def footer_links() -> str:
     return (
-        f'<a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="{DOCS_URL}">Docs</a>'
+        f'<a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/faq">FAQ</a><a href="{DOCS_URL}">Docs</a>'
         f'<a href="{DOCS_URL}how-it-works/security/">Security</a><a href="{REPO_URL}">Source</a>'
     )
 
@@ -182,9 +182,19 @@ def _conn_card(c: Connection, csrf: str, writes_allowed: bool) -> str:
         cls = "ok" if c.last_test_ok else "bad"
         test = f'<span class={cls}>{"✓" if c.last_test_ok else "✗"} {esc(c.last_test_msg)}</span> · {ago(c.last_tested_at)}'
     pills = '<span class="pill def">default</span>' if c.is_default else ""
-    pills += '<span class="pill on">writes on</span>' if c.allow_writes and writes_allowed else '<span class=pill>read-only</span>'
+    writes_on = c.allow_writes and writes_allowed
+    pills += '<span class="pill on">writes on</span>' if writes_on else '<span class=pill>read-only</span>'
+    if writes_on:
+        pills += ('<span class="pill def">confirm before write</span>' if c.write_guard
+                  else '<span class="pill on">writes run without asking</span>')
     writes_btn = post("writes", "Turn writes off" if c.allow_writes else "Turn writes on",
                       extra=f'<input type=hidden name=allow value={"0" if c.allow_writes else "1"}>') if writes_allowed else ""
+    if writes_allowed:
+        writes_btn += post(
+            "guard", "Turn confirm-before-write off" if c.write_guard else "Turn confirm-before-write on",
+            extra=f'<input type=hidden name=on value={"0" if c.write_guard else "1"}>',
+            confirm="" if not c.write_guard else
+            "Writes from Claude will run without showing you a preview first. Continue?")
     return f"""<div class=conn>
  <div class=row><span class=name>{esc(c.name)}</span>{pills}</div>
  <div class=meta><span>Key <code>{esc(c.key_id_masked)}</code></span>
@@ -208,6 +218,12 @@ def dashboard(user: User, conns: Iterable[Connection], grants: list[dict], csrf:
         f'<input type=hidden name=client_id value="{esc(g["client_id"])}"><button class="btn small danger">Disconnect</button>'
         '</form></div></div>' for g in grants
     ) or '<p class=sub style="margin-top:12px">No apps connected yet.</p>'
+    if grants:
+        grants_html += (
+            '<form method=post action="/grants/revoke-all" style="margin-top:14px" '
+            "onsubmit=\"return confirm('Disconnect every app? Each must be approved again.')\">"
+            f'<input type=hidden name=csrf value="{esc(csrf)}">'
+            '<button class="btn small danger">Disconnect all apps</button></form>')
     writes_note = "" if writes_allowed else (
         '<p class=sub>Writes are disabled on this server, so every connection is read-only.</p>')
     body = f"""{topbar(user, csrf)}<main class=wrap>{fl}
@@ -234,7 +250,8 @@ def dashboard(user: User, conns: Iterable[Connection], grants: list[dict], csrf:
  <div><label class=f>Key value</label><input type=password name=key_value required autocomplete=new-password maxlength=500></div></div>
  <div style="margin-top:14px"><label class=f>API base URL (optional, found automatically)</label>
  <input type=url name=base_url placeholder="https://awmXXXXX-c4.srv.wifi.arista.com/wifi/api" maxlength=300></div>
- {"<label class=agree style='margin-top:14px'><input type=checkbox name=allow_writes value=1> <span>Allow writes (reboot, disconnect, delete, PUT/POST) for this connection</span></label>" if writes_allowed else ""}
+ {"<label class=agree style='margin-top:14px'><input type=checkbox name=allow_writes value=1> <span>Allow writes (reboot, disconnect, delete, PUT/POST) for this connection</span></label>"
+   "<label class=agree><input type=checkbox name=write_guard value=1 checked> <span>Confirm before write: show me a preview of every change and wait for my OK</span></label>" if writes_allowed else ""}
  <div class=row style="margin-top:14px"><button class="btn primary">Save and test</button></div></form>
 </section>
 <section class=card><h2>Connected apps</h2><p class=sub>Apps you've approved. Disconnecting signs them out immediately.</p>{grants_html}</section>
@@ -255,7 +272,7 @@ def consent(user: User, client_name: str, redirect_host: str, rid: str, csrf: st
         inner = f"""<p class=sub>Signed in as {esc(user.email)}</p>
 <p><b>{esc(client_name)}</b> wants to use {PRODUCT} on your behalf.</p>
 <ul><li>It will use your default connection <b>{esc(default.name)}</b>{f" (one of {n_conns})" if n_conns > 1 else ""}.</li>
-<li>It can do anything that connection's API key can do{", including writes" if default.allow_writes else ", read-only"}.</li>
+<li>It can do anything that connection's API key can do{(", including writes" + (", each shown to you for approval first" if default.write_guard else "")) if default.allow_writes else ", read-only"}.</li>
 <li>It never sees your key. You can disconnect it at any time from the dashboard.</li></ul>
 <p class=sub>You'll return to <code>{esc(redirect_host)}</code>.</p>
 <form method=post action="/consent"><input type=hidden name=csrf value="{esc(csrf)}"><input type=hidden name=request value="{esc(rid)}">
@@ -284,12 +301,62 @@ including changes made to your network through it.</p>
 PRIVACY = """<h1>Privacy notice</h1>
 <h2>What we store</h2><ul><li>Your Google account id, email and name, to identify your account.</li>
 <li>Your CV-CUE connections: name, key ID, optional base URL and customer ID, and the key value encrypted with AES-256-GCM.</li>
+<li>Short API notes Claude saves for your account (cvcue_save_endpoint_note). They describe API behaviour, not your network.</li>
 <li>OAuth records for apps you approve, with tokens stored only as SHA-256 hashes.</li></ul>
 <h2>What we don't store</h2><p>The contents of your CV-CUE network data. Tool results pass through the server to your MCP client
 and are not saved. Secrets returned by CV-CUE (Wi-Fi passphrases, RADIUS secrets) are masked before they reach the AI.</p>
 <h2>Who sees it</h2><p>Your key value is decrypted only in server memory to open a CV-CUE session, and is never sent to Claude
 or any AI model. Google receives the sign-in request. The service runs on Fly.io.</p>
 <h2>Deleting your data</h2><p>Delete a connection or your whole account from the dashboard at any time. Deletion is immediate.</p>"""
+
+
+FAQ = [
+    ("What is this?",
+     f"{PRODUCT} lets Claude, and other MCP clients, work with your Arista CV-CUE Wi-Fi account. You save a CV-CUE API "
+     "key here, add one connector URL to Claude, and then ask about locations, access points, clients, SSIDs, events "
+     "and rogue APs in plain language. Claude can also reach any of the 613 CV-CUE API operations."),
+    ("How do I add it to Claude?",
+     "Sign in, add a connection on the dashboard, then in Claude open Settings → Connectors → Add custom connector and "
+     "paste your connector URL. Claude sends you back here to approve it."),
+    ("Can Claude see my API key?",
+     "No. The key value is encrypted as soon as you save it and is only decrypted in server memory to open a CV-CUE "
+     "session. It is never shown again, never sent to Claude, and never written to logs. Wi-Fi passphrases and RADIUS "
+     "secrets in CV-CUE's answers are masked before Claude sees them."),
+    ("Can Claude change my network?",
+     "Only if three things are true: the server allows writes, you turned writes on for that connection, and the "
+     "CV-CUE key's role permits the change. A Viewer key can never change anything. With confirm-before-write on "
+     "(the default), every change is shown to you first and only runs after you say yes in the chat."),
+    ("What does confirm-before-write do?",
+     "When Claude tries to change something, the server doesn't send it. It returns a preview of the exact request "
+     "and which connection it targets. Claude shows you the preview, and only an identical repeat of the request, "
+     "after your OK, goes through. Any change to the request needs a new preview, and previews expire after 10 "
+     "minutes. It is a safety net for mistakes; the key's role is still what limits access."),
+    ("Can I use more than one CV-CUE account?",
+     "Yes. Add a connection per key. Claude uses your default one; change it on the dashboard or ask Claude to "
+     "switch with cvcue_use_connection. You don't need to reconnect Claude."),
+    ("Are there ready-made workflows?",
+     "Yes. In Claude's + menu, under this connector, you'll find prompts such as an RF health review, a client "
+     "deep-dive, why a client can't connect, a site as-built document, a rogue AP review and a configuration "
+     "audit. Picking one only drafts the message; nothing runs until you send it."),
+    ("Does Claude remember API quirks?",
+     "Claude can save short notes about an endpoint, such as a parameter the API docs get wrong, and sees them the "
+     "next time it looks that endpoint up. Notes belong to your account and are deleted with it."),
+    ("Does it work with other AI apps?",
+     "Any MCP client that supports remote servers with OAuth can connect, including Claude Code. Clients without "
+     "OAuth can send a CV-CUE key directly; see the docs."),
+    ("How do I revoke access?",
+     "On the dashboard, disconnect one app or all of them under Connected apps, delete a connection, or delete your "
+     "account. Each takes effect immediately. You can also delete the key in CV-CUE Launchpad."),
+    ("Is this made by Arista?", DISCLAIMER),
+]
+
+
+def faq() -> str:
+    items = "".join(f"<h2>{esc(q)}</h2><p>{esc(a)}</p>" for q, a in FAQ)
+    body = (f"<h1>Frequently asked questions</h1><p class=sub>Short answers about {PRODUCT}. "
+            f'More detail is in the <a href="{DOCS_URL}">documentation</a>.</p>{items}')
+    return page(f"{PRODUCT} — FAQ", f'<header class=top>{brand()}<a class="btn small" href="/">Home</a></header>'
+                f'<main class=doc>{body}<p class=sub style="margin-top:30px">{footer_links()}</p></main>')
 
 
 def legal(kind: str) -> str:

@@ -5,6 +5,22 @@ description: Changes to CV-CUE MCP.
 
 ## November 2026
 
+### Workflow prompts, confirm before write, API notes
+
+- Six read-only [workflow prompts](/cv-cue-mcp/reference/prompts/) in Claude's + menu: RF health
+  review, client deep-dive, why a client can't connect, site as-built document, rogue AP review
+  and configuration audit.
+- [Confirm before write](/cv-cue-mcp/guides/writes/#confirm-before-write): every write is
+  previewed and runs only after your OK. On by default for new connections; switch it per
+  connection on the dashboard. `X-CVCUE-Write-Guard` and `CVCUE_WRITE_GUARD` for raw keys and
+  local servers.
+- `cvcue_api_schema` returns live-tested [caveats](/cv-cue-mcp/how-it-works/api-discovery/#caveats-and-notes)
+  and your saved notes; new `cvcue_save_endpoint_note` and `cvcue_delete_endpoint_note`.
+- Stored keys now use a per-record encryption key (HKDF-SHA256 with a random salt); existing keys
+  were re-encrypted automatically.
+- **Disconnect all apps** on the dashboard, a rate limit on OAuth client registration, and an
+  [FAQ](https://cv-cue-mcp.fly.dev/faq).
+
 ### Sign-in app and Claude custom connector
 
 - Sign in with Google and save CV-CUE API keys as **connections**, encrypted at rest.

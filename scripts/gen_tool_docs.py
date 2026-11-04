@@ -35,6 +35,7 @@ GROUPS = [
                          "cvcue_troubleshoot_client"]),
     ("Wired", ["cvcue_list_switches", "cvcue_list_wired_clients"]),
     ("Full API discovery", ["cvcue_api_modules", "cvcue_api_search", "cvcue_api_schema", "cvcue_api_execute"]),
+    ("Endpoint notes", ["cvcue_save_endpoint_note", "cvcue_delete_endpoint_note"]),
 ]
 WRITES = {"cvcue_create_location", "cvcue_delete_location", "cvcue_reboot_aps", "cvcue_disconnect_client",
           "cvcue_delete_ssid"}

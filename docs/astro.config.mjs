@@ -12,7 +12,7 @@ export default defineConfig({
     starlight({
       title: 'CV-CUE MCP',
       description:
-        'An MCP server that connects Claude to Arista CV-CUE Wi-Fi: 30 curated tools plus the full CV-CUE REST API, hosted or self-hosted.',
+        'An MCP server that connects Claude to Arista CV-CUE Wi-Fi: 30 curated tools, 6 workflow prompts and the full CV-CUE REST API, hosted or self-hosted.',
       social: [{ icon: 'github', label: 'GitHub', href: repo }],
       editLink: { baseUrl: `${repo}/edit/main/docs/` },
       lastUpdated: true,
@@ -44,6 +44,7 @@ export default defineConfig({
           label: 'Reference',
           items: [
             { label: 'Tools', slug: 'reference/tools' },
+            { label: 'Workflow prompts', slug: 'reference/prompts' },
             { label: 'Headers and configuration', slug: 'reference/configuration' },
             { label: 'Limits', slug: 'reference/limits' },
             { label: 'CV-CUE API notes', slug: 'reference/api-notes' },

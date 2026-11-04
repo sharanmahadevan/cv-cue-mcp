@@ -7,9 +7,11 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from ._shared import (
+    CONFIRM_TOKEN_HELP,
     counts,
     err,
     fetch_all,
+    guard_write,
     norm_mac,
     ok,
     page_params,
@@ -165,6 +167,7 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
     async def cvcue_reboot_aps(
         mac_addresses: Annotated[list[str], Field(description="MAC addresses of the APs to reboot")],
         confirm: Annotated[bool, Field(description="Must be true to proceed")] = False,
+        confirm_token: Annotated[str | None, Field(description=CONFIRM_TOKEN_HELP)] = None,
     ) -> dict:
         """
         Reboot one or more managed APs (clients will be disconnected).
@@ -175,5 +178,7 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
         if not confirm:
             return err("Refusing to reboot without confirm=true.")
         macs = [norm_mac(m) for m in mac_addresses]
+        if g := guard_write("reboot_aps", {"POST": "/manageddevices/aps/reboot", "aps": macs}, confirm_token):
+            return g
         result = await get_client().post("/manageddevices/aps/reboot", json=macs)
         return ok(result, f"Reboot requested for {len(macs)} AP(s)")
