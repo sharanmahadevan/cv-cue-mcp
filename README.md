@@ -10,106 +10,56 @@ Unified Edge), Arista's cloud-managed Wi-Fi platform.
 - Every tool returns the same `{ok, data, message}` envelope
 - Secrets (PSK passphrases, RADIUS secrets, …) are **redacted** before they reach the model
 
-It runs in two ways:
+📖 **Docs: <https://sharanmahadevan.github.io/cv-cue-mcp/>**
+
+It runs three ways:
 
 | Mode | Who it's for | Credentials |
 |---|---|---|
-| **Local** (stdio, or `--http`) | You, on your own machine | Your key in `.env` / env vars |
-| **Hosted** (`--hosted`) | A shared public endpoint, e.g. on Fly.io | **None stored** — each caller sends their own key |
+| **Hosted app** (`--hosted`) | Anyone: sign in with Google, save a CV-CUE key, add one URL to Claude | Saved per user, AES-256-GCM encrypted |
+| **Bring your own key** (same endpoint) | Clients that can set headers; no account | Sent on each request, never stored |
+| **Local** (stdio or `--http`) | You, on your own machine | Your key in `.env` |
 
 > Not affiliated with or endorsed by Arista Networks. "Arista" and "CV-CUE" are trademarks of
 > Arista Networks, Inc.
 
 ---
 
-## Using a hosted server (bring your own key)
+## Using the hosted app
 
-Get an API key from **Launchpad → Admin → Keys**, then point your MCP client at the server's
-`/mcp` endpoint with your key in the `Authorization` header:
+1. Create an API key in **Launchpad → Admin → Keys** (narrowest role that works).
+2. Sign in at <https://cv-cue-mcp.fly.dev>, add the key as a connection and test it.
+3. In Claude: **Settings → Connectors → Add custom connector** →
+   `https://cv-cue-mcp.fly.dev/mcp` → **Connect**, then **Allow** on the approval page.
 
-```
-Authorization: Bearer <key_id>:<key_value>
-```
+Claude Code: `claude mcp add --transport http cv-cue https://cv-cue-mcp.fly.dev/mcp`, then `/mcp`
+→ Authenticate.
 
-| Header | Required | Purpose |
-|---|---|---|
-| `Authorization: Bearer <key_id>:<key_value>` | yes* | Your CV-CUE API key |
-| `X-CVCUE-Key-Id` + `X-CVCUE-Key-Value` | yes* | Alternative to the bearer header |
-| `X-CVCUE-Base-URL` | no | Your API base URL. Discovered through Launchpad when omitted. Must be `https://…wifi.arista.com`. |
-| `X-CVCUE-CID` | no | Customer ID, for keys that reach several customers |
-| `X-CVCUE-Enable-Writes: true` | no | Opt in to mutating calls (only works if the operator allows writes) |
+Keys are encrypted at rest, decrypted only in memory, never shown again and never sent to Claude.
+Everything is read-only unless writes are allowed by the server **and** switched on for the
+connection. Details: [Security model](https://sharanmahadevan.github.io/cv-cue-mcp/how-it-works/security/).
 
-\* one of the two forms.
-
-**Claude Code**
+**Bring your own key** instead of an account:
 
 ```bash
-claude mcp add --transport http arista-cv-cue https://<your-app>.fly.dev/mcp \
-  --header "Authorization: Bearer $CVCUE_KEY_ID:$CVCUE_KEY_VALUE"
+claude mcp add --transport http cv-cue https://cv-cue-mcp.fly.dev/mcp \
+  --header "Authorization: Bearer $CVCUE_KEY_ID:$CVCUE_KEY_VALUE" > /dev/null
 ```
 
-**Claude Desktop / other stdio-only clients** — bridge with
-[`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
+See [Connecting clients](https://sharanmahadevan.github.io/cv-cue-mcp/setup/connecting/) for
+optional headers and Claude Desktop via `mcp-remote`.
 
-```json
-{
-  "mcpServers": {
-    "arista-cv-cue": {
-      "command": "npx",
-      "args": ["mcp-remote", "https://<your-app>.fly.dev/mcp",
-               "--header", "Authorization:${CVCUE_AUTH}"],
-      "env": { "CVCUE_AUTH": "Bearer <key_id>:<key_value>" }
-    }
-  }
-}
-```
-
-Any client that lets you set HTTP headers on a streamable-HTTP MCP server works the same way.
-Connector UIs that only support OAuth can't pass a key yet.
-
-### What the hosted server does with your key
-
-- It never writes your key to disk or logs. Requests carry it; the server keeps a logged-in
-  CV-CUE session in memory, keyed by a SHA-256 hash of your credentials, and logs it out after
-  15 minutes idle (or on restart).
-- Each caller gets their own CV-CUE session — callers never share a client.
-- `X-CVCUE-Base-URL` is restricted to `*.wifi.arista.com` over HTTPS (no SSRF to other hosts).
-- Writes need **both** the operator's `CVCUE_ENABLE_WRITES=true` and your
-  `X-CVCUE-Enable-Writes: true`. Destructive tools additionally need `confirm=true`.
-- Your key is still sent to a server someone else operates. Prefer a key with the narrowest role
-  that does what you need, or run your own copy (below).
-
----
-
-## Deploying your own hosted server on Fly.io
+## Self-hosting
 
 ```bash
-git clone https://github.com/sharanmahadevan/cv-cue-mcp && cd cv-cue-mcp
-fly launch --no-deploy --copy-config     # pick an app name; keeps fly.toml
+fly apps create <your-app> && fly volumes create cvcue_data --size 1 --app <your-app>
+fly secrets set CVCUE_MASTER_KEY=… CVCUE_SESSION_SECRET=… GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=…
 fly deploy
-curl https://<your-app>.fly.dev/healthz  # {"status":"ok","sessions":0}
 ```
 
-No secrets are needed — the server stores no credentials. Operator settings live in
-`fly.toml` under `[env]`:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `CVCUE_ENABLE_WRITES` | `false` | Ceiling for mutating calls; callers must still opt in per request |
-| `CVCUE_ALLOWED_HOST_SUFFIXES` | `.wifi.arista.com` | Hosts callers may target with `X-CVCUE-Base-URL` |
-| `CVCUE_REDACT_SECRETS` | `true` | Mask passphrases/secrets in tool output |
-| `CVCUE_MAX_RESPONSE_CHARS` | `100000` | `cvcue_api_execute` refuses larger responses and returns a shape preview |
-| `CVCUE_POOL_MAX` / `CVCUE_POOL_IDLE_TTL` | `256` / `900` | Cached sessions and idle seconds |
-| `CVCUE_SOURCE_URL` | — | Link shown at `GET /` |
-
-Endpoints: `POST /mcp` (MCP, stateless streamable HTTP with JSON responses), `GET /healthz`,
-`GET /` (connection info).
-
-Run the same image anywhere else:
-
-```bash
-docker build -t cv-cue-mcp . && docker run -p 8080:8080 cv-cue-mcp
-```
+Full walkthrough, including the Google OAuth client and backing up the master key:
+[Self-host on Fly.io](https://sharanmahadevan.github.io/cv-cue-mcp/guides/fly/). All variables:
+[Headers and configuration](https://sharanmahadevan.github.io/cv-cue-mcp/reference/configuration/).
 
 ---
 
@@ -185,9 +135,12 @@ and builds `https://<awm-server>/wifi/api` itself.
 
 ## Tools
 
+Full reference with parameters: [Tools](https://sharanmahadevan.github.io/cv-cue-mcp/reference/tools/).
+
 | Area | Tools |
 |---|---|
 | Session / system | `cvcue_session_info`, `cvcue_server_info` |
+| Connections (hosted) | `cvcue_list_connections`, `cvcue_use_connection` |
 | Locations | `cvcue_list_locations`, `cvcue_get_location`, `cvcue_create_location`✎, `cvcue_delete_location`✎ |
 | Access points | `cvcue_list_aps`, `cvcue_get_ap`, `cvcue_ap_health_summary`, `cvcue_list_radios`, `cvcue_reboot_aps`✎ |
 | Clients | `cvcue_list_clients`, `cvcue_find_client`, `cvcue_client_health_summary`, `cvcue_client_association_history`, `cvcue_disconnect_client`✎ |
@@ -236,6 +189,8 @@ pip install .                         # reinstall so the server picks it up
 pip install '.[http,dev]'
 pytest                                # offline tests; the CV-CUE API is mocked
 ruff check src tests
+python scripts/gen_tool_docs.py       # regenerate the docs' tool reference
+cd docs && npm install && npm run dev # docs site at localhost:4321/cv-cue-mcp/
 ```
 
 On macOS, files under `~/Desktop` can get the `hidden` flag, which makes Python 3.12+ skip

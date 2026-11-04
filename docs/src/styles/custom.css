@@ -1,0 +1,18 @@
+/* Teal accent, dark-first like most MCP/dev-tool docs */
+:root {
+  --sl-color-accent-low: #0b2f2c;
+  --sl-color-accent: #14b8a6;
+  --sl-color-accent-high: #a7f3eb;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #ccfbf1;
+  --sl-color-accent: #0f766e;
+  --sl-color-accent-high: #134e4a;
+}
+/* Tighter tables for the tool reference */
+.sl-markdown-content table {
+  font-size: var(--sl-text-sm);
+}
+.sl-markdown-content td code {
+  white-space: nowrap;
+}

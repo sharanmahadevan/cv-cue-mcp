@@ -10,10 +10,9 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
-from mcp.server.transport_security import TransportSecuritySettings
 
 from .client import CvcueClient
-from .config import BUNDLED_SPEC, ServerConfig, _truthy
+from .config import ServerConfig, _truthy
 from .tools import _shared, aps, clients, events, execute, locations, switches, troubleshooting, wlans
 
 log = logging.getLogger(__name__)
@@ -56,14 +55,6 @@ All tools return {ok, data, message}. Check ok==true before using data.
 """
 
 
-HOSTED_NOTE = """
-## Hosted mode
-This server is shared: each connection uses the caller's own CV-CUE API key.
-Writes are only possible when the caller sent 'X-CVCUE-Enable-Writes: true'
-and the operator allows writes. Secret values are returned as ***REDACTED***.
-"""
-
-
 def _register_all(mcp: FastMCP, get_client: Callable[[], CvcueClient], writes: Callable[[], bool],
                   spec_path: str) -> None:
     locations.register(mcp, get_client, writes)
@@ -76,43 +67,12 @@ def _register_all(mcp: FastMCP, get_client: Callable[[], CvcueClient], writes: C
     execute.register(mcp, get_client, spec_path=spec_path, enable_writes=writes)
 
 
-def create_server(cfg: ServerConfig | None, *, hosted: bool = False) -> FastMCP:
+def create_server(cfg: ServerConfig) -> FastMCP:
     """
-    Build the FastMCP server.
-
-    Local mode (default): one CV-CUE client from cfg.credentials for the process.
-    Hosted mode: no stored credentials; each request's client comes from
-    hosted.CredentialMiddleware (bring-your-own-key).
+    Build the local FastMCP server: one CV-CUE client from cfg.credentials for the
+    process. (The multi-tenant hosted app is built by hosted.build_app.)
     """
     _shared.REDACT_SECRETS = _truthy(os.environ.get("CVCUE_REDACT_SECRETS"), default=True)
-
-    if hosted:
-        from .hosted import current_caller
-
-        def hosted_client() -> CvcueClient:
-            caller = current_caller()
-            if caller is None:
-                raise RuntimeError("No CV-CUE credentials on this request (send your API key in the headers)")
-            return caller.client
-
-        def hosted_writes() -> bool:
-            caller = current_caller()
-            return bool(caller and caller.writes)
-
-        mcp = FastMCP(
-            name="cv-cue-mcp",
-            instructions=INSTRUCTIONS + HOSTED_NOTE,
-            stateless_http=True,
-            json_response=True,
-            # Public server behind Fly's proxy: Host is the public hostname, not localhost.
-            transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
-        )
-        spec = os.environ.get("CVCUE_OPENAPI_SPEC") or str(BUNDLED_SPEC)
-        _register_all(mcp, hosted_client, hosted_writes, spec)
-        log.info("Server ready — hosted (bring-your-own-key) mode")
-        return mcp
-
-    assert cfg is not None, "cfg is required in local mode"
     state: dict = {"client": None}
 
     @asynccontextmanager

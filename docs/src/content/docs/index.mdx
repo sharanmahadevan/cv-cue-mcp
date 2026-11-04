@@ -1,0 +1,79 @@
+---
+title: What is CV-CUE MCP?
+description: A hosted MCP server that connects Claude to Arista CV-CUE Wi-Fi. Sign in, save a CV-CUE API key, add one URL to Claude.
+---
+
+import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+
+CV-CUE MCP is an [MCP](https://modelcontextprotocol.io) server that connects Claude to your
+**Arista CV-CUE** (CloudVision Cognitive Unified Edge) Wi-Fi account. You sign in with Google,
+save a CV-CUE API key, and add one URL to Claude as a custom connector. From then on you can ask
+Claude about your wireless network in plain language, and it works against the live CV-CUE API
+for you.
+
+It covers the whole API (613 operations across 24 modules) through 30 curated tools and a
+4-step discovery workflow. It's open source, so you can also run your own copy.
+
+## What it does for you
+
+- **Inventory and health:** locations, access points, radios, switches and clients; what's
+  online, what's offline, and which APs have problems.
+- **Client troubleshooting:** one call pulls a client's record, recent associations, connection
+  logs, failures and CV-CUE's own root-cause hints.
+- **Network health:** connectivity, performance, application and infrastructure scores for each
+  location, the same data as CV-CUE's Network Health dashboard.
+- **Security (WIPS):** rogue, external and uncategorized APs, rogues with clients attached, top
+  vendors and SSIDs.
+- **SSIDs and configuration:** SSID profiles, device templates, policies and anything else in the
+  API, with passphrases and secrets masked before Claude sees them.
+- **Changes, when you allow them:** create or delete locations, reboot APs, disconnect clients,
+  or call any write endpoint. Off by default, and switched on per connection.
+
+Your CV-CUE API key sets the limit on all of it: Claude can do exactly what that key's role allows.
+
+## What you can ask for
+
+- "Give me a health summary of all my APs. Which ones are offline or have problems?"
+- "Why does the client with MAC aa:bb:cc:… keep failing to connect?"
+- "Which SSIDs are broadcast right now, and on which bands?"
+- "Show me rogue APs that have clients associated."
+- "Compare network health across my sites for the last 24 hours."
+- "List the device templates and which locations use them."
+
+See [Examples](/cv-cue-mcp/examples/) for full conversations.
+
+## How it reaches the whole API
+
+Registering one MCP tool per API operation would mean 613 tools, more than any model can choose
+from sensibly. CV-CUE MCP gives Claude **30 curated tools** for everyday questions, plus **4
+discovery tools** (`modules → search → schema → execute`) that let it find any endpoint, read
+its parameters and call it. Read [Curated tools and API discovery](/cv-cue-mcp/how-it-works/api-discovery/)
+for the details.
+
+## Getting started
+
+1. [Sign in and save a CV-CUE API key](/cv-cue-mcp/setup/getting-started/)
+2. [Connect it to Claude](/cv-cue-mcp/setup/connecting/)
+3. Try one of the [examples](/cv-cue-mcp/examples/)
+
+## Explore the docs
+
+<CardGrid>
+  <LinkCard title="Getting started" description="Create a CV-CUE API key, sign in, save and test a connection." href="/cv-cue-mcp/setup/getting-started/" />
+  <LinkCard title="Connecting clients" description="Claude custom connector, Claude Code, other MCP clients, or bring your own key." href="/cv-cue-mcp/setup/connecting/" />
+  <LinkCard title="Security model" description="Where your key lives, how it's encrypted, and what Claude can and can't see." href="/cv-cue-mcp/how-it-works/security/" />
+  <LinkCard title="Tools" description="All 36 tools with their parameters, generated from the code." href="/cv-cue-mcp/reference/tools/" />
+  <LinkCard title="Self-host on Fly.io" description="Run your own copy: Google sign-in, secrets, volume, deploy." href="/cv-cue-mcp/guides/fly/" />
+  <LinkCard title="Troubleshooting" description="401s, failed connection tests, missing connector, oversized responses." href="/cv-cue-mcp/troubleshooting/" />
+</CardGrid>
+
+## How your key is handled
+
+Your CV-CUE key value is encrypted at rest with AES-256-GCM, decrypted only in server memory to
+open a CV-CUE session, and never sent to Claude or included in any model context. See
+[Security model](/cv-cue-mcp/how-it-works/security/).
+
+<Aside type="caution" title="Not affiliated with Arista">
+CV-CUE MCP is an independent open-source project. It is not made, endorsed or supported by Arista
+Networks. Arista and CV-CUE are trademarks of Arista Networks, Inc.
+</Aside>

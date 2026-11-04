@@ -31,6 +31,8 @@ Issues = "https://github.com/sharanmahadevan/cv-cue-mcp/issues"
 http = [
     "uvicorn[standard]>=0.30.0",
     "starlette>=0.40.0",
+    "itsdangerous>=2.1",
+    "cryptography>=42",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -60,3 +62,4 @@ pythonpath = ["src"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/cvcue_mcp/tools/*.py" = ["E501"]   # tool signatures carry long Field descriptions
+"src/cvcue_mcp/web/*.py" = ["E501"]     # HTML templates and SQL

@@ -67,6 +67,15 @@ def _run_hosted(args: argparse.Namespace) -> None:
         sys.exit(1)
     from .hosted import build_app
 
+    class _StripQuery(logging.Filter):
+        """Keep OAuth codes and request ids out of access logs: log paths only."""
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            if isinstance(record.args, tuple) and len(record.args) >= 3 and isinstance(record.args[2], str):
+                record.args = (*record.args[:2], record.args[2].split("?", 1)[0], *record.args[3:])
+            return True
+
+    logging.getLogger("uvicorn.access").addFilter(_StripQuery())
     uvicorn.run(
         build_app(),
         host=args.host or os.environ.get("MCP_HTTP_HOST", "0.0.0.0"),

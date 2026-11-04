@@ -1,6 +1,7 @@
-# Fly.io config for the public, bring-your-own-key CV-CUE MCP server.
-# The app stores NO CV-CUE credentials — every caller sends their own key.
-# Change `app` to a name you own (fly apps create <name>) before deploying.
+# Fly.io config for the hosted CV-CUE MCP app (sign-in + OAuth + MCP endpoint).
+# Users' CV-CUE keys are stored AES-GCM encrypted in SQLite on the volume below.
+# Required secrets (fly secrets set ...): CVCUE_MASTER_KEY, CVCUE_SESSION_SECRET,
+# GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET. Change `app` and CVCUE_PUBLIC_URL for your own deploy.
 
 app = "cv-cue-mcp"
 primary_region = "sjc"
@@ -10,10 +11,12 @@ primary_region = "sjc"
 
 [env]
   MCP_TRANSPORT = "hosted"
+  CVCUE_PUBLIC_URL = "https://cv-cue-mcp.fly.dev"
+  CVCUE_DB_PATH = "/data/cvcue.db"
   PORT = "8080"
   LOG_LEVEL = "INFO"
-  # Ceiling for mutating calls. When "true", a caller must ALSO send
-  # `X-CVCUE-Enable-Writes: true` to reboot/disconnect/delete/PUT/POST.
+  # Ceiling for mutating calls. When "true", users can turn writes on per connection
+  # (raw-key callers must send `X-CVCUE-Enable-Writes: true`).
   CVCUE_ENABLE_WRITES = "false"
   # Only these CV-CUE hosts may be targeted via X-CVCUE-Base-URL (SSRF guard).
   CVCUE_ALLOWED_HOST_SUFFIXES = ".wifi.arista.com"
@@ -40,6 +43,11 @@ primary_region = "sjc"
     interval = "30s"
     timeout = "5s"
     grace_period = "10s"
+
+# SQLite lives here — keep exactly one machine (fly scale count 1).
+[mounts]
+  source = "cvcue_data"
+  destination = "/data"
 
 [[vm]]
   size = "shared-cpu-1x"
