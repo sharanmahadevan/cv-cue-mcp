@@ -20,6 +20,7 @@ primary_region = "sjc"
   CVCUE_REDACT_SECRETS = "true"
   CVCUE_POOL_MAX = "256"
   CVCUE_POOL_IDLE_TTL = "900"
+  CVCUE_SOURCE_URL = "https://github.com/sharanmahadevan/cv-cue-mcp"
 
 [http_service]
   internal_port = 8080

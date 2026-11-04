@@ -84,7 +84,7 @@ Connector UIs that only support OAuth can't pass a key yet.
 ## Deploying your own hosted server on Fly.io
 
 ```bash
-git clone https://github.com/<you>/cv-cue-mcp && cd cv-cue-mcp
+git clone https://github.com/sharanmahadevan/cv-cue-mcp && cd cv-cue-mcp
 fly launch --no-deploy --copy-config     # pick an app name; keeps fly.toml
 fly deploy
 curl https://<your-app>.fly.dev/healthz  # {"status":"ok","sessions":0}
@@ -116,7 +116,7 @@ docker build -t cv-cue-mcp . && docker run -p 8080:8080 cv-cue-mcp
 ## Local setup (your own key, on your machine)
 
 ```bash
-git clone https://github.com/<you>/cv-cue-mcp && cd cv-cue-mcp
+git clone https://github.com/sharanmahadevan/cv-cue-mcp && cd cv-cue-mcp
 python3.12 -m venv .venv
 .venv/bin/pip install .               # '.[dev]' for tests, '.[http]' for HTTP/hosted modes
 cp .env.example .env                  # then fill in your values
