@@ -17,7 +17,7 @@ primary_region = "sjc"
   LOG_LEVEL = "INFO"
   # Ceiling for mutating calls. When "true", users can turn writes on per connection
   # (raw-key callers must send `X-CVCUE-Enable-Writes: true`).
-  CVCUE_ENABLE_WRITES = "false"
+  CVCUE_ENABLE_WRITES = "true"
   # Only these CV-CUE hosts may be targeted via X-CVCUE-Base-URL (SSRF guard).
   CVCUE_ALLOWED_HOST_SUFFIXES = ".wifi.arista.com"
   CVCUE_REDACT_SECRETS = "true"

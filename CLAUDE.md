@@ -34,7 +34,8 @@ Never commit `.env`, `*.db`, or anything from `../cv-cue-mcp-secrets/`.
 
 - Editable installs don't work in this folder (macOS marks `.pth` files hidden under Desktop);
   use a regular `pip install ".[http,dev]"`.
-- Writes are off server-wide on Fly (`CVCUE_ENABLE_WRITES="false"` in `fly.toml`).
+- Writes are allowed on Fly (`CVCUE_ENABLE_WRITES="true"` in `fly.toml`, since 2026-11-05) but still off per
+  connection unless enabled on the dashboard or sent as `X-CVCUE-Enable-Writes: true` (raw keys).
 - `CVCUE_MASTER_KEY` encrypts stored keys; Fly can't show it again. Don't rotate it casually.
 - The GitHub secret `FLY_API_TOKEN` is an app-scoped deploy token (`fly tokens list --app cv-cue-mcp`),
   expiring 2027-11-05.
