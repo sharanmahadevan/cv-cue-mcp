@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Deploy to Fly even if it's offline (this turns the server on)"
+        type: boolean
+        default: true
 
 jobs:
   test:
@@ -19,3 +25,48 @@ jobs:
       - run: pip install -e ".[http,dev]"
       - run: ruff check src tests
       - run: pytest -q
+
+  # After the tests pass on main: deploy to Fly, but only if the app is online
+  # (has at least one machine). A manual run ("Run workflow") always deploys.
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: fly-deploy
+      cancel-in-progress: false
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      APP: cv-cue-mcp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Decide whether to deploy
+        id: check
+        run: |
+          go=true
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::warning::FLY_API_TOKEN secret is not set; skipping deploy."
+            go=false
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            echo "Manual run: deploying regardless of state."
+          elif [ "$(flyctl machines list -a "$APP" --json | jq 'length')" = "0" ]; then
+            echo "::notice::Fly is offline (0 machines), so this commit was not deployed. Use Run workflow, or 'fly deploy', to turn it on with the latest code."
+            go=false
+          else
+            before="${{ github.event.before }}"
+            if git cat-file -e "${before}^{commit}" 2>/dev/null \
+               && ! git diff --name-only "$before" HEAD | grep -qE '^(src/|Dockerfile$|fly\.toml$|pyproject\.toml$)'; then
+              echo "::notice::No server code changed (docs or tooling only); skipped deploy."
+              go=false
+            fi
+          fi
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+      - name: Deploy
+        if: steps.check.outputs.go == 'true'
+        run: flyctl deploy --remote-only -a "$APP"
+      - name: Health check
+        if: steps.check.outputs.go == 'true'
+        run: curl -fsS --retry 6 --retry-delay 5 --retry-all-errors https://cv-cue-mcp.fly.dev/healthz

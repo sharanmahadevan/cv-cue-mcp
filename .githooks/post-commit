@@ -1,0 +1,28 @@
+#!/bin/sh
+# After every commit on main: push to GitHub, then refresh the local install that
+# Claude Desktop runs. Enable once per clone with:  git config core.hooksPath .githooks
+# Skip for one commit with:  CVCUE_NO_AUTOPUSH=1 git commit ...
+
+[ -n "$CVCUE_NO_AUTOPUSH" ] && exit 0
+branch=$(git rev-parse --abbrev-ref HEAD)
+[ "$branch" = "main" ] || { echo "post-commit: on '$branch', not pushing (only main auto-pushes)"; exit 0; }
+
+root=$(git rev-parse --show-toplevel)
+
+echo "post-commit: pushing to GitHub…"
+if git push -q origin main; then
+  echo "post-commit: pushed. GitHub runs the tests, then deploys to Fly if it's online."
+else
+  echo "post-commit: push FAILED — run 'git push' when you're back online." >&2
+fi
+
+# Refresh the local copy for Claude Desktop in the background (takes ~15 s).
+venv="$root/.venv312"
+if [ -x "$venv/bin/pip" ]; then
+  log="$root/.git/post-commit-install.log"
+  ( cd "$root" && "$venv/bin/pip" install -q --disable-pip-version-check ".[http]" >"$log" 2>&1 \
+      && echo "ok $(git rev-parse --short HEAD) $(date)" >>"$log" \
+      || echo "FAILED $(date)" >>"$log" ) &
+  echo "post-commit: updating the local install in the background. Quit and reopen Claude Desktop to load it."
+fi
+exit 0
