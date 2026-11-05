@@ -53,6 +53,21 @@ def flatten_tree(tree: dict) -> list[dict]:
     return out
 
 
+def find_created(node: Any, parent_id: int, name: str, location_type: str) -> dict | None:
+    """Find the newest child named `name` under `parent_id` anywhere in a POST /locations echo."""
+    if not isinstance(node, dict):
+        return None
+    kids = [c for c in (node.get("children") or []) if isinstance(c, dict)]
+    if loc_id(node.get("id")) == parent_id:
+        hits = [c for c in kids if c.get("name") == name and c.get("type") == location_type]
+        if hits:
+            return max(hits, key=lambda c: loc_id(c.get("id")) if isinstance(loc_id(c.get("id")), int) else -1)
+    for c in kids:
+        if found := find_created(c, parent_id, name, location_type):
+            return found
+    return None
+
+
 def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -> None:
 
     @mcp.tool()
@@ -148,7 +163,7 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
         name: Annotated[str, Field(description="Name of the new location")],
         parent_id: Annotated[int, Field(description="Parent location id (folders only can hold children)")],
         location_type: Annotated[str, Field(description="'folderlocation' (campus/building) or 'floorlocation'")] = "folderlocation",
-        timezone_id: Annotated[str, Field(description="Java timezone id, e.g. 'America/Los_Angeles'")] = "UTC",
+        timezone_id: Annotated[str, Field(description="Java timezone id, e.g. 'America/Los_Angeles'. Folders only: CV-CUE makes floors inherit the parent folder's timezone")] = "UTC",
         venue_id: Annotated[str | None, Field(description="Optional venue id / label")] = None,
         confirm_token: Annotated[str | None, Field(description=CONFIRM_TOKEN_HELP)] = None,
     ) -> dict:
@@ -173,13 +188,20 @@ def register(mcp: FastMCP, get_client: Any, enable_writes: Callable[[], bool]) -
         }
         if g := guard_write("create_location", {"POST": "/locations", "body": body}, confirm_token):
             return g
-        result = await get_client().post("/locations", json=body)
-        # The API echoes the whole parent folder; pull out the location we just made.
-        created = next(
-            (c for c in reversed((result or {}).get("children") or [])
-             if isinstance(c, dict) and c.get("name") == name and c.get("type") == location_type),
-            None,
-        ) if isinstance(result, dict) else None
+        client = get_client()
+        result = await client.post("/locations", json=body)
+        # The API echoes a tree (the parent, or the whole tree from the root); find what we made.
+        created = find_created(result, parent_id, name, location_type)
+        if created is None:
+            tree = await client.get("/locations/tree")
+            matches = [
+                r for r in flatten_tree(tree if isinstance(tree, dict) else {})
+                if r["parentId"] == parent_id and r["name"] == name and r["type"] == location_type
+            ]
+            if matches:
+                m = max(matches, key=lambda r: r["id"] if isinstance(r["id"], int) else -1)
+                created = {"id": m["id"], "name": m["name"], "type": m["type"],
+                           "timezoneId": m["timezone"], "venueId": m.get("venueId")}
         if created is None:
             return ok(result, f"Created {location_type} '{name}' under {parent_id} (new id not found in response)")
         new_id = loc_id(created.get("id"))

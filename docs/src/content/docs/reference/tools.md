@@ -67,7 +67,7 @@ Create a folder or floor location under a parent. Requires CVCUE_ENABLE_WRITES=t
 | `name` | string | **required** | Name of the new location |
 | `parent_id` | int | **required** | Parent location id (folders only can hold children) |
 | `location_type` | string | `'folderlocation'` | 'folderlocation' (campus/building) or 'floorlocation' |
-| `timezone_id` | string | `'UTC'` | Java timezone id, e.g. 'America/Los_Angeles' |
+| `timezone_id` | string | `'UTC'` | Java timezone id, e.g. 'America/Los_Angeles'. Folders only: CV-CUE makes floors inherit the parent folder's timezone |
 | `venue_id` | string | `None` | Optional venue id / label |
 | `confirm_token` | string | `None` | Only when write guard asked for it: the confirm_token from the preview, sent after the user approved. Leave empty otherwise. |
 

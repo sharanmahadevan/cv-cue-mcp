@@ -100,3 +100,21 @@ async def test_launchpad_discovery():
     async with c:
         assert (await c.get("/x"))["host"] == "awm9.example.com"
         assert c.base_url == "https://awm9.example.com/wifi/api"
+
+
+async def test_post_not_retried_on_5xx_but_get_is(monkeypatch):
+    monkeypatch.setattr("cvcue_mcp.client._RETRY_BACKOFF", [0, 0, 0])
+    hits = {"GET": 0, "POST": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/session"):
+            return httpx.Response(201, json={}, headers={"Set-Cookie": "JSESSIONID=s; Path=/"})
+        hits[request.method] += 1
+        return httpx.Response(503)
+
+    async with CvcueClient(creds(), transport=httpx.MockTransport(handler)) as c:
+        with pytest.raises(CvcueAPIError):
+            await c.post("/manageddevices/aps/reboot", json=["AA:BB:CC:DD:EE:FF"])
+        with pytest.raises(CvcueAPIError):
+            await c.get("/a")
+    assert hits == {"POST": 1, "GET": 3}

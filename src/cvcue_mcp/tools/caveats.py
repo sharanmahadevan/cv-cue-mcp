@@ -41,6 +41,8 @@ CAVEATS: list[tuple[str, Callable[[str, dict], bool], str]] = [
     ("POST", lambda p, _op: p == "/locations",
      "POST /locations takes the PARENT folder ({type: folderlocation, id: {type: locallocationid, id}}) "
      "with the new location under children, and echoes the whole parent back. "
+     "The echo can be the whole tree from the root, so find the new child under its parent. Floors "
+     "ignore timezoneId and inherit the parent folder's timezone. "
      "Prefer cvcue_create_location, which returns the new id."),
     ("DELETE", lambda p, _op: p == "/locations",
      "DELETE /locations takes a JSON body {type: locallocationid, id} and also deletes every child "

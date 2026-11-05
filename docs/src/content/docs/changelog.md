@@ -5,6 +5,17 @@ description: Changes to CV-CUE MCP.
 
 ## November 2026
 
+### QA fixes
+
+- `cvcue_create_location` now returns the new id for locations created below a non-root parent
+  (CV-CUE echoes the whole tree from the root, so the id used to come back as "not found").
+- POST requests (reboot, create, disconnect...) are no longer retried after a server error or a
+  dropped connection, so a slow write can't run twice. They are still retried on HTTP 429 or when
+  the connection never opened.
+- `cvcue_rogue_ap_summary` counts per classification now exclude managed APs, matching
+  `cvcue_list_rogue_aps`.
+- Documented that floors inherit their parent folder's timezone.
+
 ### Workflow prompts, confirm before write, API notes
 
 - Six read-only [workflow prompts](/cv-cue-mcp/reference/prompts/) in Claude's + menu: RF health

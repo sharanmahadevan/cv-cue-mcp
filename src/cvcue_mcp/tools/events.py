@@ -160,11 +160,11 @@ def register(mcp: FastMCP, get_client: Any) -> None:
         for g in AP_GROUPS:
             data = await client.get("/aps", params={
                 **page_params(0, 1), "locationid": location_id, "group": [g],
-                "activestatus": True,
+                "managedap": False, "activestatus": True,
             })
             totals[g] = total_of(data, len(rows_of(data)))
         rogues, _ = await fetch_all(client, "/aps", {
-            "locationid": location_id, "group": ["ROGUE"], "activestatus": True,
+            "locationid": location_id, "group": ["ROGUE"], "managedap": False, "activestatus": True,
         }, max_items=2000)
         ssids = [{"s": s} for a in rogues for s in (a.get("ssids") or []) if isinstance(s, str)]
         return ok({

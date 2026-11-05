@@ -194,6 +194,9 @@ class CvcueClient:
         query = {**self._cid_params(), **_clean_params(params)}
         headers = {"Version": str(version)} if version not in (None, "") else {}
         relogged = False
+        # POST is not idempotent (reboot, create...): only retry it when the request
+        # provably never reached CV-CUE (connect failure) or was rate-limited (429).
+        idempotent = method.upper() != "POST"
 
         for attempt in range(_MAX_RETRIES):
             try:
@@ -202,7 +205,8 @@ class CvcueClient:
                 )
             except httpx.RequestError as exc:
                 log.warning("Request error (attempt %d): %s", attempt + 1, exc)
-                if attempt < _MAX_RETRIES - 1:
+                unsent = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+                if attempt < _MAX_RETRIES - 1 and (idempotent or unsent):
                     await asyncio.sleep(_RETRY_BACKOFF[attempt])
                     continue
                 raise
@@ -218,7 +222,7 @@ class CvcueClient:
                     "HTTP %d on %s %s (attempt %d/%d)",
                     resp.status_code, method, path, attempt + 1, _MAX_RETRIES,
                 )
-                if attempt < _MAX_RETRIES - 1:
+                if attempt < _MAX_RETRIES - 1 and (idempotent or resp.status_code == 429):
                     await asyncio.sleep(_RETRY_BACKOFF[attempt])
                     continue
                 raise CvcueAPIError(resp.status_code, method, path, resp.text)

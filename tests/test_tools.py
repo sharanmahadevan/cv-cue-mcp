@@ -155,3 +155,21 @@ async def test_local_write_guard_and_file_notes(mock_client, monkeypatch, tmp_pa
         assert d["data"]["your_notes"][0]["note"].startswith("active=true")
     finally:
         _shared.GUARD = _shared._no_guard
+
+
+def test_find_created_nested_under_non_root_parent():
+    from cvcue_mcp.tools.locations import find_created
+
+    def lid(n):
+        return {"type": "locallocationid", "id": n}
+
+    echo = {"type": "folderlocation", "id": lid(0), "children": [
+        {"type": "folderlocation", "id": lid(3), "name": "HQ", "children": [
+            {"type": "floorlocation", "id": lid(7), "name": "F1"},
+            {"type": "floorlocation", "id": lid(9), "name": "F1"},
+        ]},
+        {"type": "floorlocation", "id": lid(4), "name": "F1"},
+    ]}
+    assert find_created(echo, 3, "F1", "floorlocation")["id"] == lid(9)
+    assert find_created(echo, 0, "F1", "floorlocation")["id"] == lid(4)
+    assert find_created(echo, 3, "F2", "floorlocation") is None
